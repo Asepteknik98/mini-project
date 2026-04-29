@@ -18,8 +18,14 @@ CREATE TABLE IF NOT EXISTS users (
     nis VARCHAR(20) UNIQUE NOT NULL,
     nama VARCHAR(100) NOT NULL,
     password TEXT NOT NULL,
+    phone VARCHAR(20) NULL,
+    profile_photo VARCHAR(255) NULL,
     role ENUM('admin','student') DEFAULT 'student'
 );
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS phone VARCHAR(20) NULL AFTER password,
+    ADD COLUMN IF NOT EXISTS profile_photo VARCHAR(255) NULL AFTER phone;
 
 -- Tabel absensi
 CREATE TABLE IF NOT EXISTS absensi (

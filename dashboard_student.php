@@ -9,6 +9,16 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'student') {
 
 require 'koneksi.php';
 
+$profilePhone = '';
+$profilePhoto = '';
+$stmtProfile = $pdo->prepare("SELECT phone, profile_photo FROM users WHERE id = ? LIMIT 1");
+$stmtProfile->execute([(int) $_SESSION['user_id']]);
+$profileData = $stmtProfile->fetch();
+if ($profileData) {
+    $profilePhone = $profileData['phone'] ?? '';
+    $profilePhoto = $profileData['profile_photo'] ?? '';
+}
+
 // ---- AJAX HANDLERS ----
 if (
     isset($_SERVER['HTTP_X_REQUESTED_WITH'])
@@ -95,18 +105,61 @@ if (
     }
 
     if ($action === 'save_profile') {
-        $nama = trim((string) ($_POST['nama'] ?? ''));
+        $nama        = trim((string) ($_POST['nama'] ?? ''));
         $passwordBaru = (string) ($_POST['password_baru'] ?? '');
+        $phone       = trim((string) ($_POST['phone'] ?? ''));
         if ($nama === '') {
             echo json_encode(['success' => false, 'message' => 'Nama tidak boleh kosong.']);
             exit;
         }
-        $pdo->prepare("UPDATE users SET nama = ? WHERE id = ?")->execute([$nama, (int) $_SESSION['user_id']]);
+        if ($phone !== '' && !preg_match('/^[0-9\+\-\s]{6,20}$/', $phone)) {
+            echo json_encode(['success' => false, 'message' => 'Nomor HP tidak valid.']);
+            exit;
+        }
+
+        $fields = ['nama = ?', 'phone = ?'];
+        $params = [$nama, $phone];
+
+        $photoPath = null;
+        if (!empty($_FILES['photo']['name']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
+            $allowed = ['jpg', 'jpeg', 'png', 'webp'];
+            $fileInfo = pathinfo($_FILES['photo']['name']);
+            $ext = strtolower($fileInfo['extension'] ?? '');
+            if (!in_array($ext, $allowed, true)) {
+                echo json_encode(['success' => false, 'message' => 'Format foto hanya JPG, PNG, atau WEBP.']);
+                exit;
+            }
+            $uploadDir = __DIR__ . '/uploads/profiles';
+            if (!is_dir($uploadDir)) {
+                mkdir($uploadDir, 0755, true);
+            }
+            $fileName = 'user_' . (int) $_SESSION['user_id'] . '_' . time() . '.' . $ext;
+            $targetPath = $uploadDir . '/' . $fileName;
+            if (!move_uploaded_file($_FILES['photo']['tmp_name'], $targetPath)) {
+                echo json_encode(['success' => false, 'message' => 'Gagal mengunggah foto profil.']);
+                exit;
+            }
+            $photoPath = 'uploads/profiles/' . $fileName;
+            $fields[] = 'profile_photo = ?';
+            $params[] = $photoPath;
+
+            $oldPhoto = $_SESSION['profile_photo'] ?? '';
+            if ($oldPhoto && strpos($oldPhoto, 'uploads/profiles/') === 0 && file_exists(__DIR__ . '/' . $oldPhoto)) {
+                @unlink(__DIR__ . '/' . $oldPhoto);
+            }
+        }
+
+        $params[] = (int) $_SESSION['user_id'];
+        $pdo->prepare('UPDATE users SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
         $_SESSION['nama'] = $nama;
+        $_SESSION['phone'] = $phone;
+        if ($photoPath !== null) {
+            $_SESSION['profile_photo'] = $photoPath;
+        }
         if ($passwordBaru !== '') {
             $pdo->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([password_hash($passwordBaru, PASSWORD_BCRYPT), (int) $_SESSION['user_id']]);
         }
-        echo json_encode(['success' => true, 'message' => 'Profil berhasil diperbarui!', 'nama' => $nama]);
+        echo json_encode(['success' => true, 'message' => 'Profil berhasil diperbarui!', 'nama' => $nama, 'phone' => $phone, 'photo' => $photoPath]);
         exit;
     }
 
@@ -168,7 +221,13 @@ if (
   </nav>
 
   <div class="sidebar-user">
-    <div class="user-avatar"><?= strtoupper(substr($_SESSION['nama'], 0, 1)) ?></div>
+    <div class="user-avatar">
+      <?php if (!empty($profilePhoto)): ?>
+        <img src="<?= htmlspecialchars($profilePhoto) ?>" alt="Foto Profil" />
+      <?php else: ?>
+        <?= strtoupper(substr($_SESSION['nama'], 0, 1)) ?>
+      <?php endif; ?>
+    </div>
     <div class="user-info">
       <span class="user-name"><?= htmlspecialchars($_SESSION['nama']) ?></span>
       <span class="user-role">Siswa</span>
@@ -357,13 +416,29 @@ if (
       <div class="card-header">
         <h3>Edit Profil Siswa</h3>
       </div>
-      <p class="section-subtitle">Ubah nama tampilan dan password akun kamu.</p>
-      <form id="profileFormStudent" class="form-grid">
-        <div class="input-wrap">
-          <input type="text" id="studentNama" value="<?= htmlspecialchars($_SESSION['nama']) ?>" placeholder="Nama lengkap" required/>
+      <p class="section-subtitle">Ubah nama, HP, dan foto profil agar tampilan lebih personal.</p>
+      <form id="profileFormStudent" class="form-grid" enctype="multipart/form-data">
+        <div class="profile-card">
+          <div class="profile-photo-box">
+            <?php if (!empty($profilePhoto)): ?>
+              <img id="profilePreview" src="<?= htmlspecialchars($profilePhoto) ?>" alt="Profil" />
+            <?php else: ?>
+              <div id="profilePreview" class="profile-fallback"><?= strtoupper(substr($_SESSION['nama'], 0, 1)) ?></div>
+            <?php endif; ?>
+          </div>
+          <div class="profile-photo-label">Foto profil</div>
         </div>
         <div class="input-wrap">
-          <input type="password" id="studentPassBaru" placeholder="Password baru (kosongkan jika tidak diubah)"/>
+          <input type="text" id="studentNama" name="nama" value="<?= htmlspecialchars($_SESSION['nama']) ?>" placeholder="Nama lengkap" required/>
+        </div>
+        <div class="input-wrap">
+          <input type="text" id="studentPhone" name="phone" value="<?= htmlspecialchars($profilePhone) ?>" placeholder="No HP (contoh: +6281234567890)"/>
+        </div>
+        <div class="input-wrap">
+          <input type="file" id="studentPhoto" name="photo" accept="image/png,image/jpeg,image/webp"/>
+        </div>
+        <div class="input-wrap">
+          <input type="password" id="studentPassBaru" name="password_baru" placeholder="Password baru (kosongkan jika tidak diubah)"/>
         </div>
         <button class="btn-primary" type="submit">Simpan Perubahan Profil</button>
       </form>
@@ -374,19 +449,19 @@ if (
 
 <!-- BOTTOM NAVIGATION (Mobile) -->
 <nav class="bottom-nav" id="bottomNav">
-  <a href="#" class="bottom-nav-item active" data-tab="dashboard" onclick="showTab('dashboard', this)">
+  <a href="#" class="bottom-nav-item active" data-tab="dashboard">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
     <span>Dashboard</span>
   </a>
-  <a href="#" class="bottom-nav-item" data-tab="jadwal" onclick="showTab('jadwal', this)">
+  <a href="#" class="bottom-nav-item" data-tab="jadwal">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
     <span>Jadwal</span>
   </a>
-  <a href="#" class="bottom-nav-item" data-tab="scan" onclick="showTab('scan', this)">
+  <a href="#" class="bottom-nav-item" data-tab="scan">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/><rect x="3" y="16" width="5" height="5"/><path d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1a2 2 0 0 1 2 2v1"/></svg>
     <span>Scan</span>
   </a>
-  <a href="#" class="bottom-nav-item" data-tab="profil" onclick="showTab('profil', this)">
+  <a href="#" class="bottom-nav-item" data-tab="profil">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
     <span>Profil</span>
   </a>
@@ -412,21 +487,23 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('currentDate').textContent = new Date().toLocaleDateString('id-ID', {weekday:'long',year:'numeric',month:'long',day:'numeric'});
   // Set active tab for bottom nav
   document.querySelector('.bottom-nav-item[data-tab="dashboard"]').classList.add('active');
+  document.querySelectorAll('.bottom-nav-item').forEach(el => {
+    el.addEventListener('click', event => {
+      event.preventDefault();
+      showTab(el.dataset.tab, el);
+    });
+  });
   loadDashboardData();
 });
 
 // Tab switching
 function showTab(tab, el) {
-  if (tab === 'dashboard') {
-    window.location.href = 'dashboard_student.php';
-    return;
-  }
   document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('.bottom-nav-item').forEach(el => el.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.add('active');
   if (el) el.classList.add('active');
-  const titles = {jadwal:'Jadwal Materi', scan:'Scan QR', profil:'Profil Saya'};
+  const titles = {dashboard:'Dashboard Siswa', jadwal:'Jadwal Materi', scan:'Scan QR', profil:'Profil Saya'};
   document.getElementById('pageTitle').textContent = titles[tab] || 'Dashboard Siswa';
   if (window.innerWidth < 768) toggleSidebar();
 
@@ -435,6 +512,8 @@ function showTab(tab, el) {
     loadHistory();
     loadMiniCalendar();
     loadWeeklyChartScan();
+  } else if (tab === 'dashboard') {
+    loadDashboardData();
   }
 }
 
@@ -646,25 +725,56 @@ async function markTaskDone(jadwalId) {
 }
 
 // Profile form
-document.getElementById('profileFormStudent').addEventListener('submit', async function(e) {
-  e.preventDefault();
-  const fd = new FormData();
-  fd.append('action', 'save_profile');
-  fd.append('nama', document.getElementById('studentNama').value.trim());
-  fd.append('password_baru', document.getElementById('studentPassBaru').value);
+const profileForm = document.getElementById('profileFormStudent');
+if (profileForm) {
+  profileForm.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    fd.append('action', 'save_profile');
 
-  try {
-    const res = await fetch('dashboard_student.php', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
-    const data = await res.json();
-    showToast(data.message, data.success ? 'success' : 'error');
-    if (data.success) {
-      document.querySelectorAll('.user-name').forEach(el => el.textContent = data.nama);
-      document.getElementById('studentPassBaru').value = '';
+    try {
+      const res = await fetch('dashboard_student.php', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
+      const data = await res.json();
+      showToast(data.message, data.success ? 'success' : 'error');
+      if (data.success) {
+        document.querySelectorAll('.user-name').forEach(el => el.textContent = data.nama);
+        document.getElementById('studentPassBaru').value = '';
+        if (data.photo) {
+          const avatar = document.querySelector('.sidebar-user .user-avatar');
+          if (avatar) {
+            avatar.innerHTML = `<img src="${escapeHTML(data.photo)}" alt="Foto Profil" />`;
+          }
+        }
+      }
+    } catch (err) {
+      showToast('Gagal menyimpan profil', 'error');
     }
-  } catch (err) {
-    showToast('Gagal menyimpan profil', 'error');
-  }
-});
+  });
+}
+
+const photoInput = document.getElementById('studentPhoto');
+if (photoInput) {
+  photoInput.addEventListener('change', function() {
+    const preview = document.getElementById('profilePreview');
+    if (!preview || !this.files || !this.files[0]) return;
+    const file = this.files[0];
+    if (!file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (preview.tagName === 'IMG') {
+        preview.src = reader.result;
+      } else {
+        const container = document.createElement('img');
+        container.id = 'profilePreview';
+        container.src = reader.result;
+        container.alt = 'Preview Profil';
+        container.className = 'profile-photo-img';
+        preview.replaceWith(container);
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 // Logout
 async function doLogout() {
@@ -683,24 +793,36 @@ async function doLogout() {
 // Start QR scanner
 async function startScanner() {
   if (scanning) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    showToast('Browser Anda tidak mendukung akses kamera. Gunakan Chrome atau browser terbaru.', 'error');
+    return;
+  }
 
   try {
-    html5QrCode = new Html5Qrcode("qr-reader");
+    const cameras = await Html5Qrcode.getCameras();
+    if (!cameras || !cameras.length) {
+      showToast('Tidak ada kamera yang tersedia. Pastikan perangkat memiliki kamera aktif.', 'error');
+      return;
+    }
+
+    const selectedCamera = cameras.find(cam => /back|rear|belakang/i.test(cam.label)) || cameras[0];
+    html5QrCode = new Html5Qrcode('qr-reader');
     const config = { fps: 10, qrbox: { width: 220, height: 220 }, aspectRatio: 1.0 };
 
-    await html5QrCode.start(
-      { facingMode: "environment" },
-      config,
-      onScanSuccess,
-      onScanError
-    );
-
+    await html5QrCode.start(selectedCamera.id, config, onScanSuccess, onScanError);
     scanning = true;
     document.getElementById('startBtn').style.display = 'none';
     document.getElementById('stopBtn').style.display = 'flex';
-    showToast('Kamera aktif. Arahkan ke QR Code.', 'info');
-  } catch(err) {
-    showToast('Gagal akses kamera: ' + err, 'error');
+    showToast('Kamera aktif. Arahkan ke QR Code.', 'success');
+  } catch (err) {
+    const message = err?.message || String(err);
+    const errorMessage = /permission|denied|not allowed/i.test(message)
+      ? 'Izin kamera ditolak. Coba atur izin kamera di browser.'
+      : /notfound|NotFound|No cameras/i.test(message)
+        ? 'Tidak ditemukan kamera yang dapat digunakan.'
+        : message;
+    showToast('Gagal mengaktifkan kamera: ' + errorMessage, 'error');
+    html5QrCode = null;
   }
 }
 
@@ -781,7 +903,7 @@ function renderHistory(history) {
     <div class="history-item">
       <div class="history-date">${escapeHTML(h.tanggal)}</div>
       <div class="history-time">${escapeHTML(h.waktu)}</div>
-      <div class="history-status ${h.status === 'hadir' ? 'success' : 'error'}">${escapeHTML(h.status)}</div>
+      <div class="history-status ${((h.status || '').toLowerCase() === 'hadir') ? 'success' : 'error'}">${escapeHTML(h.status)}</div>
     </div>
   `).join('');
 }

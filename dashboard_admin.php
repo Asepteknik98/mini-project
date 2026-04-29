@@ -18,90 +18,89 @@ if (
     header('Content-Type: application/json');
     $action = $_POST['action'] ?? $_GET['action'] ?? '';
 
-    // Get student list
     if ($action === 'get_students') {
         $stmt = $pdo->query("SELECT nis, nama FROM data_siswa ORDER BY nama");
         echo json_encode(['success' => true, 'data' => $stmt->fetchAll()]);
         exit;
     }
 
-    // Add student
     if ($action === 'add_student') {
         $nis  = trim((string) ($_POST['nis'] ?? ''));
         $nama = trim((string) ($_POST['nama'] ?? ''));
         if (
-            empty($nis)
-            || empty($nama)
+            empty($nis) || empty($nama)
             || !preg_match('/^[A-Za-z0-9\-]{3,20}$/', $nis)
             || mb_strlen($nama) > 100
         ) {
             echo json_encode(['success' => false, 'message' => 'NIS dan nama wajib diisi.']);
             exit;
         }
+
+        $check = $pdo->prepare("SELECT nis FROM data_siswa WHERE nis = ? UNION SELECT nis FROM users WHERE nis = ? LIMIT 1");
+        $check->execute([$nis, $nis]);
+        if ($check->fetch()) {
+            echo json_encode(['success' => false, 'message' => 'NIS sudah ada di database.']);
+            exit;
+        }
+
         try {
             $stmt = $pdo->prepare("INSERT INTO data_siswa (nis, nama) VALUES (?, ?)");
             $stmt->execute([$nis, $nama]);
             echo json_encode(['success' => true, 'message' => 'Siswa berhasil ditambahkan.']);
         } catch (PDOException $e) {
-            echo json_encode(['success' => false, 'message' => 'NIS sudah ada di database.']);
+            echo json_encode(['success' => false, 'message' => 'Terjadi kesalahan saat menyimpan data siswa.']);
         }
         exit;
     }
 
-    // Delete student
     if ($action === 'delete_student') {
         $nis = trim((string) ($_POST['nis'] ?? ''));
         if (!preg_match('/^[A-Za-z0-9\-]{3,20}$/', $nis)) {
             echo json_encode(['success' => false, 'message' => 'NIS tidak valid.']);
             exit;
         }
-        $stmt = $pdo->prepare("DELETE FROM data_siswa WHERE nis = ?");
-        $stmt->execute([$nis]);
-        echo json_encode(['success' => true, 'message' => 'Data siswa dihapus.']);
+
+        try {
+            $pdo->beginTransaction();
+            $pdo->prepare("DELETE FROM tugas_progress WHERE nis = ?")->execute([$nis]);
+            $pdo->prepare("DELETE FROM absensi WHERE nis = ?")->execute([$nis]);
+            $pdo->prepare("DELETE FROM users WHERE nis = ?")->execute([$nis]);
+            $pdo->prepare("DELETE FROM data_siswa WHERE nis = ?")->execute([$nis]);
+            $pdo->commit();
+            echo json_encode(['success' => true, 'message' => 'Data siswa dihapus.']);
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            echo json_encode(['success' => false, 'message' => 'Gagal menghapus data siswa.']);
+        }
         exit;
     }
 
-    // Edit student
     if ($action === 'edit_student') {
-        $nis = trim((string) ($_POST['nis'] ?? ''));
+        $nis  = trim((string) ($_POST['nis'] ?? ''));
         $nama = trim((string) ($_POST['nama'] ?? ''));
         if (
-            empty($nis)
-            || empty($nama)
+            empty($nis) || empty($nama)
             || !preg_match('/^[A-Za-z0-9\-]{3,20}$/', $nis)
             || mb_strlen($nama) > 100
         ) {
             echo json_encode(['success' => false, 'message' => 'NIS dan nama tidak valid.']);
             exit;
         }
-        $stmt = $pdo->prepare("UPDATE data_siswa SET nama = ? WHERE nis = ?");
-        $stmt->execute([$nama, $nis]);
+        $pdo->prepare("UPDATE data_siswa SET nama = ? WHERE nis = ?")->execute([$nama, $nis]);
         $pdo->prepare("UPDATE users SET nama = ? WHERE nis = ?")->execute([$nama, $nis]);
         echo json_encode(['success' => true, 'message' => 'Data siswa berhasil diperbarui.']);
         exit;
     }
 
-    // Generate QR token
     if ($action === 'generate_qr') {
-        // Invalidate old tokens
         $pdo->exec("DELETE FROM qr_sessions WHERE expired_at < NOW()");
-
-        $token     = bin2hex(random_bytes(24)); // Secure 48-char token
-        $expiredAt = date('Y-m-d H:i:s', time() + 600); // 10 minutes
-
-        $stmt = $pdo->prepare("INSERT INTO qr_sessions (token, expired_at) VALUES (?, ?)");
-        $stmt->execute([$token, $expiredAt]);
-
-        echo json_encode([
-            'success'    => true,
-            'token'      => $token,
-            'expired_at' => $expiredAt,
-            'expires_in' => 600
-        ]);
+        $token     = bin2hex(random_bytes(24));
+        $expiredAt = date('Y-m-d H:i:s', time() + 600);
+        $pdo->prepare("INSERT INTO qr_sessions (token, expired_at) VALUES (?, ?)")->execute([$token, $expiredAt]);
+        echo json_encode(['success' => true, 'token' => $token, 'expired_at' => $expiredAt, 'expires_in' => 600]);
         exit;
     }
 
-    // Get attendance records
     if ($action === 'get_absensi') {
         $stmt = $pdo->query("
             SELECT a.id, a.nis, a.tanggal, a.waktu, a.status, d.nama
@@ -115,70 +114,52 @@ if (
     }
 
     if ($action === 'get_weekly_chart') {
-        $labels = [];
-        $hadir = [];
-        $tugasDone = [];
+        $labels = []; $hadir = []; $tugasDone = [];
         for ($i = 6; $i >= 0; $i--) {
-            $date = date('Y-m-d', strtotime("-{$i} day"));
+            $date     = date('Y-m-d', strtotime("-{$i} day"));
             $labels[] = date('d M', strtotime($date));
-
-            $stmtHadir = $pdo->prepare("SELECT COUNT(*) FROM absensi WHERE tanggal = ?");
-            $stmtHadir->execute([$date]);
-            $hadir[] = (int) $stmtHadir->fetchColumn();
-
-            $stmtDone = $pdo->prepare("SELECT COUNT(*) FROM tugas_progress WHERE DATE(updated_at) = ? AND status = 'done'");
-            $stmtDone->execute([$date]);
-            $tugasDone[] = (int) $stmtDone->fetchColumn();
+            $s1 = $pdo->prepare("SELECT COUNT(*) FROM absensi WHERE tanggal = ?");
+            $s1->execute([$date]); $hadir[] = (int) $s1->fetchColumn();
+            $s2 = $pdo->prepare("SELECT COUNT(*) FROM tugas_progress WHERE DATE(updated_at) = ? AND status = 'done'");
+            $s2->execute([$date]); $tugasDone[] = (int) $s2->fetchColumn();
         }
-
-        echo json_encode([
-            'success' => true,
-            'labels' => $labels,
-            'hadir' => $hadir,
-            'tugas_done' => $tugasDone
-        ]);
+        echo json_encode(['success' => true, 'labels' => $labels, 'hadir' => $hadir, 'tugas_done' => $tugasDone]);
         exit;
     }
 
     if ($action === 'get_schedules') {
-        $stmt = $pdo->query("
-            SELECT id, judul, deskripsi, tanggal_materi, deadline_tugas
-            FROM materi_jadwal
-            ORDER BY tanggal_materi DESC, id DESC
-            LIMIT 100
-        ");
+        $stmt = $pdo->query("SELECT id, judul, deskripsi, tanggal_materi, deadline_tugas FROM materi_jadwal ORDER BY tanggal_materi DESC, id DESC LIMIT 100");
         echo json_encode(['success' => true, 'data' => $stmt->fetchAll()]);
         exit;
     }
 
     if ($action === 'add_schedule') {
-        $judul = trim((string) ($_POST['judul'] ?? ''));
-        $deskripsi = trim((string) ($_POST['deskripsi'] ?? ''));
+        $judul         = trim((string) ($_POST['judul'] ?? ''));
+        $deskripsi     = trim((string) ($_POST['deskripsi'] ?? ''));
         $tanggalMateri = trim((string) ($_POST['tanggal_materi'] ?? ''));
-        $deadline = trim((string) ($_POST['deadline_tugas'] ?? ''));
-
+        $deadline      = trim((string) ($_POST['deadline_tugas'] ?? ''));
         if ($judul === '' || $tanggalMateri === '' || $deadline === '') {
             echo json_encode(['success' => false, 'message' => 'Judul, tanggal materi, dan deadline wajib diisi.']);
             exit;
         }
-
-        $stmt = $pdo->prepare("
-            INSERT INTO materi_jadwal (judul, deskripsi, tanggal_materi, deadline_tugas, created_by)
-            VALUES (?, ?, ?, ?, ?)
-        ");
-        $stmt->execute([$judul, $deskripsi, $tanggalMateri, $deadline, (int) $_SESSION['user_id']]);
+        $pdo->prepare("INSERT INTO materi_jadwal (judul, deskripsi, tanggal_materi, deadline_tugas, created_by) VALUES (?, ?, ?, ?, ?)")
+            ->execute([$judul, $deskripsi, $tanggalMateri, $deadline, (int) $_SESSION['user_id']]);
         echo json_encode(['success' => true, 'message' => 'Jadwal materi berhasil ditambahkan.']);
         exit;
     }
 
     if ($action === 'delete_schedule') {
         $id = (int) ($_POST['id'] ?? 0);
-        if ($id <= 0) {
-            echo json_encode(['success' => false, 'message' => 'ID jadwal tidak valid.']);
-            exit;
+        if ($id <= 0) { echo json_encode(['success' => false, 'message' => 'ID jadwal tidak valid.']); exit; }
+        try {
+            $pdo->beginTransaction();
+            $pdo->prepare("DELETE FROM tugas_progress WHERE jadwal_id = ?")->execute([$id]);
+            $pdo->prepare("DELETE FROM materi_jadwal WHERE id = ?")->execute([$id]);
+            $pdo->commit();
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            echo json_encode(['success' => false, 'message' => 'Gagal menghapus jadwal.']); exit;
         }
-        $pdo->prepare("DELETE FROM tugas_progress WHERE jadwal_id = ?")->execute([$id]);
-        $pdo->prepare("DELETE FROM materi_jadwal WHERE id = ?")->execute([$id]);
         echo json_encode(['success' => true, 'message' => 'Jadwal materi dihapus.']);
         exit;
     }
@@ -188,44 +169,34 @@ if (
             SELECT ds.nis, ds.nama,
                 (SELECT COUNT(*) FROM absensi a WHERE a.nis = ds.nis AND a.tanggal = CURDATE()) AS hadir_hari_ini,
                 (SELECT COUNT(*) FROM tugas_progress tp WHERE tp.nis = ds.nis AND tp.status = 'done') AS tugas_selesai
-            FROM data_siswa ds
-            ORDER BY ds.nama
+            FROM data_siswa ds ORDER BY ds.nama
         ");
         echo json_encode(['success' => true, 'data' => $stmt->fetchAll()]);
         exit;
     }
 
     if ($action === 'add_account') {
-        $nis = trim((string) ($_POST['nis'] ?? ''));
-        $nama = trim((string) ($_POST['nama'] ?? ''));
+        $nis      = trim((string) ($_POST['nis'] ?? ''));
+        $nama     = trim((string) ($_POST['nama'] ?? ''));
         $password = (string) ($_POST['password'] ?? '');
-        $role = (string) ($_POST['role'] ?? 'student');
-
-        if ($nis === '' || $nama === '' || $password === '' || !in_array($role, ['admin', 'student'], true)) {
-            echo json_encode(['success' => false, 'message' => 'Data akun tidak lengkap.']);
+        $role     = (string) ($_POST['role'] ?? 'student');
+        if ($nis === '' || $nama === '' || $password === '' || strlen($password) < 6 || !in_array($role, ['admin', 'student'], true)) {
+            echo json_encode(['success' => false, 'message' => 'Data akun tidak lengkap atau password minimal 6 karakter.']);
             exit;
         }
-
         $check = $pdo->prepare("SELECT id FROM users WHERE nis = ?");
         $check->execute([$nis]);
-        if ($check->fetch()) {
-            echo json_encode(['success' => false, 'message' => 'NIS sudah punya akun.']);
-            exit;
-        }
-
-        $stmt = $pdo->prepare("INSERT INTO users (nis, nama, password, role) VALUES (?, ?, ?, ?)");
-        $stmt->execute([$nis, $nama, password_hash($password, PASSWORD_BCRYPT), $role]);
+        if ($check->fetch()) { echo json_encode(['success' => false, 'message' => 'NIS sudah punya akun.']); exit; }
+        $pdo->prepare("INSERT INTO users (nis, nama, password, role) VALUES (?, ?, ?, ?)")
+            ->execute([$nis, $nama, password_hash($password, PASSWORD_BCRYPT), $role]);
         echo json_encode(['success' => true, 'message' => 'Akun berhasil dibuat.']);
         exit;
     }
 
     if ($action === 'save_profile') {
-        $nama = trim((string) ($_POST['nama'] ?? ''));
+        $nama         = trim((string) ($_POST['nama'] ?? ''));
         $passwordBaru = (string) ($_POST['password_baru'] ?? '');
-        if ($nama === '') {
-            echo json_encode(['success' => false, 'message' => 'Nama tidak boleh kosong.']);
-            exit;
-        }
+        if ($nama === '') { echo json_encode(['success' => false, 'message' => 'Nama tidak boleh kosong.']); exit; }
         $pdo->prepare("UPDATE users SET nama = ? WHERE id = ?")->execute([$nama, (int) $_SESSION['user_id']]);
         $_SESSION['nama'] = $nama;
         if ($passwordBaru !== '') {
@@ -235,23 +206,15 @@ if (
         exit;
     }
 
-    // Get stats
     if ($action === 'get_stats') {
         $totalSiswa  = $pdo->query("SELECT COUNT(*) FROM data_siswa")->fetchColumn();
         $totalHadir  = $pdo->query("SELECT COUNT(*) FROM absensi WHERE tanggal = CURDATE()")->fetchColumn();
         $totalUsers  = $pdo->query("SELECT COUNT(*) FROM users WHERE role='student'")->fetchColumn();
         $activeToken = $pdo->query("SELECT COUNT(*) FROM qr_sessions WHERE expired_at > NOW()")->fetchColumn();
-        echo json_encode([
-            'success' => true,
-            'total_siswa' => $totalSiswa,
-            'hadir_hari_ini' => $totalHadir,
-            'total_users' => $totalUsers,
-            'active_token' => $activeToken
-        ]);
+        echo json_encode(['success' => true, 'total_siswa' => $totalSiswa, 'hadir_hari_ini' => $totalHadir, 'total_users' => $totalUsers, 'active_token' => $activeToken]);
         exit;
     }
 
-    // Logout
     if ($action === 'logout') {
         session_destroy();
         echo json_encode(['success' => true, 'redirect' => 'login.php']);
@@ -268,7 +231,6 @@ if (
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="assets/css/style.css">
-  <!-- QR Code generator library -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
 </head>
@@ -292,27 +254,27 @@ if (
   </div>
 
   <nav class="sidebar-nav">
-    <a href="#" class="nav-item active" onclick="showTab('dashboard', this)">
+    <a href="#" class="nav-item active" onclick="showTab('dashboard', this); return false;">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
       Dashboard
     </a>
-    <a href="#" class="nav-item" onclick="showTab('siswa', this)">
+    <a href="#" class="nav-item" onclick="showTab('siswa', this); return false;">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
       Data Siswa
     </a>
-    <a href="#" class="nav-item" onclick="showTab('qr', this)">
+    <a href="#" class="nav-item" onclick="showTab('qr', this); return false;">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/><rect x="3" y="16" width="5" height="5"/><path d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1a2 2 0 0 1 2 2v1"/></svg>
       Generate QR
     </a>
-    <a href="#" class="nav-item" onclick="showTab('absensi', this)">
+    <a href="#" class="nav-item" onclick="showTab('absensi', this); return false;">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       Rekap Absensi
     </a>
-    <a href="#" class="nav-item" onclick="showTab('jadwal', this)">
+    <a href="#" class="nav-item" onclick="showTab('jadwal', this); return false;">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
       Jadwal Materi
     </a>
-    <a href="#" class="nav-item" onclick="showTab('profil', this)">
+    <a href="#" class="nav-item" onclick="showTab('profil', this); return false;">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
       Profil
     </a>
@@ -342,24 +304,32 @@ if (
     </div>
   </div>
 
-  <!-- TAB: DASHBOARD -->
+  <!-- ==================== TAB: DASHBOARD ==================== -->
   <div id="tab-dashboard" class="tab-content active">
+
+    <!-- Hero Banner -->
     <div class="hero-banner">
-      <div>
+      <div class="hero-text">
         <h2>Halo <?= htmlspecialchars($_SESSION['nama']) ?>, selamat datang!</h2>
-      <p>Pantau kehadiran siswa, buat QR sesi baru, dan lihat update absensi secara realtime dengan dashboard modern ini.</p>
-      <div class="hero-badges">
-        <span class="hero-badge">🎯 Real-time Monitoring</span>
-        <span class="hero-badge">🔐 Token Aman 10 Menit</span>
-        <span class="hero-badge">⚡ Tanpa Reload Halaman</span>
-      </div>
-    </div>
-    <div class="hero-side">
-      <div class="hero-circle">
-        <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/><rect x="3" y="16" width="5" height="5"/><path d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1a2 2 0 0 1 2 2v1"/>
-        </svg>
-      </div>
+        <p>Pantau kehadiran siswa, buat QR sesi baru, dan lihat update absensi secara realtime dengan dashboard modern ini.</p>
+        <div class="hero-badges">
+          <span class="hero-badge">🎯 Real-time Monitoring</span>
+          <span class="hero-badge">🔐 Token Aman 10 Menit</span>
+          <span class="hero-badge">⚡ Tanpa Reload Halaman</span>
+        </div>
+      </div><!-- /hero-text -->
+      <div class="hero-side">
+        <div class="hero-circle">
+          <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/>
+            <rect x="3" y="16" width="5" height="5"/>
+            <path d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </div>
+      </div><!-- /hero-side -->
+    </div><!-- /hero-banner -->
+
+    <!-- Stats Grid -->
     <div class="stats-grid">
       <div class="stat-card purple">
         <div class="stat-icon">
@@ -397,8 +367,9 @@ if (
           <span class="stat-label">Token Aktif</span>
         </div>
       </div>
-    </div>
+    </div><!-- /stats-grid -->
 
+    <!-- Chart + Monitor -->
     <div class="qr-grid">
       <div class="card">
         <div class="card-header">
@@ -411,7 +382,7 @@ if (
       </div>
       <div class="card">
         <div class="card-header">
-          <h3>Monitoring Kehadiran & Tugas</h3>
+          <h3>Monitoring Kehadiran &amp; Tugas</h3>
         </div>
         <div class="calendar-container">
           <div id="miniCalendarAdmin"></div>
@@ -420,8 +391,9 @@ if (
           <div class="loading-placeholder">Memuat monitoring...</div>
         </div>
       </div>
-    </div>
+    </div><!-- /qr-grid -->
 
+    <!-- Absensi Terkini -->
     <div class="card mt-20">
       <div class="card-header">
         <h3>Absensi Terkini</h3>
@@ -435,10 +407,12 @@ if (
         <div class="loading-placeholder">Memuat data...</div>
       </div>
     </div>
-  </div>
 
-  <!-- TAB: DATA SISWA -->
+  </div><!-- /tab-dashboard -->
+
+  <!-- ==================== TAB: DATA SISWA ==================== -->
   <div id="tab-siswa" class="tab-content">
+
     <div class="card">
       <div class="card-header">
         <h3>Tambah Siswa</h3>
@@ -471,7 +445,7 @@ if (
           <input type="text" id="accNama" placeholder="Nama akun" required/>
         </div>
         <div class="input-wrap">
-          <input type="text" id="accPassword" placeholder="Password awal" required/>
+          <input type="password" id="accPassword" placeholder="Password (min 6 karakter)" required/>
         </div>
         <div class="input-wrap">
           <select id="accRole" class="select-transparent">
@@ -496,9 +470,10 @@ if (
         <div class="loading-placeholder">Memuat data...</div>
       </div>
     </div>
-  </div>
 
-  <!-- TAB: GENERATE QR -->
+  </div><!-- /tab-siswa -->
+
+  <!-- ==================== TAB: GENERATE QR ==================== -->
   <div id="tab-qr" class="tab-content">
     <div class="qr-grid">
       <div class="card qr-gen-card">
@@ -510,7 +485,6 @@ if (
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/><rect x="3" y="16" width="5" height="5"/><path d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1a2 2 0 0 1 2 2v1"/></svg>
           Generate QR Code Baru
         </button>
-
         <div id="qrResult" class="qr-result hidden">
           <div id="qrCanvas" class="qr-canvas"></div>
           <div class="qr-meta">
@@ -558,10 +532,10 @@ if (
           </div>
         </div>
       </div>
-    </div>
-  </div>
+    </div><!-- /qr-grid -->
+  </div><!-- /tab-qr -->
 
-  <!-- TAB: ABSENSI -->
+  <!-- ==================== TAB: ABSENSI ==================== -->
   <div id="tab-absensi" class="tab-content">
     <div class="card">
       <div class="card-header">
@@ -575,8 +549,9 @@ if (
         <div class="loading-placeholder">Memuat data...</div>
       </div>
     </div>
-  </div>
+  </div><!-- /tab-absensi -->
 
+  <!-- ==================== TAB: JADWAL ==================== -->
   <div id="tab-jadwal" class="tab-content">
     <div class="card">
       <div class="card-header">
@@ -584,9 +559,15 @@ if (
       </div>
       <p class="section-subtitle">Jadwal ini otomatis tampil di dashboard siswa beserta progres tugasnya.</p>
       <form id="scheduleForm" class="inline-form">
-        <div class="input-wrap"><input type="text" id="jadwalJudul" placeholder="Judul materi" required/></div>
-        <div class="input-wrap"><input type="date" id="jadwalTanggal" required/></div>
-        <div class="input-wrap"><input type="date" id="jadwalDeadline" required/></div>
+        <div class="input-wrap">
+          <input type="text" id="jadwalJudul" placeholder="Judul materi" required/>
+        </div>
+        <div class="input-wrap">
+          <input type="date" id="jadwalTanggal" required/>
+        </div>
+        <div class="input-wrap">
+          <input type="date" id="jadwalDeadline" required/>
+        </div>
         <button class="btn-primary" type="submit">Tambah Jadwal</button>
       </form>
       <div class="mt-20 input-wrap">
@@ -597,8 +578,9 @@ if (
       <div class="card-header"><h3>Daftar Jadwal Materi</h3></div>
       <div id="scheduleWrap"><div class="loading-placeholder">Memuat jadwal...</div></div>
     </div>
-  </div>
+  </div><!-- /tab-jadwal -->
 
+  <!-- ==================== TAB: PROFIL ==================== -->
   <div id="tab-profil" class="tab-content">
     <div class="card">
       <div class="card-header"><h3>Edit Profil Admin</h3></div>
@@ -613,11 +595,11 @@ if (
         <button class="btn-primary" type="submit">Simpan Profil</button>
       </form>
     </div>
-  </div>
+  </div><!-- /tab-profil -->
 
-</main>
+</main><!-- /main-content -->
 
-<!-- OVERLAY for mobile -->
+<!-- Overlay mobile -->
 <div class="sidebar-overlay" id="overlay" onclick="toggleSidebar()"></div>
 
 <div id="toast" class="toast"></div>
@@ -627,13 +609,15 @@ if (
 // ============================================================
 // Dashboard Admin Script
 // ============================================================
-let siswaData = [];
-let qrTimer = null;
+let siswaData      = [];
+let qrTimer        = null;
 let weeklyChartAdmin = null;
 
-// Init
+// ---- Init ----
 document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('currentDate').textContent = new Date().toLocaleDateString('id-ID', {weekday:'long',year:'numeric',month:'long',day:'numeric'});
+  document.getElementById('currentDate').textContent =
+    new Date().toLocaleDateString('id-ID', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+
   loadStats();
   loadSiswa();
   loadAbsensi();
@@ -641,32 +625,40 @@ document.addEventListener('DOMContentLoaded', () => {
   loadTaskMonitor();
   loadSchedules();
   renderMiniCalendarAdmin();
-  // Auto-refresh absensi every 15s
-  setInterval(loadAbsensi, 15000);
-  setInterval(loadStats, 15000);
+
+  setInterval(loadAbsensi,     15000);
+  setInterval(loadStats,       15000);
   setInterval(loadTaskMonitor, 20000);
 });
 
-// Tab switching
+// ---- Tab switching ----
 function showTab(tab, el) {
-  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.add('active');
   if (el) el.classList.add('active');
-  const titles = {dashboard:'Dashboard',siswa:'Data Siswa',qr:'Generate QR',absensi:'Rekap Absensi',jadwal:'Jadwal Materi',profil:'Profil Saya'};
-  document.getElementById('pageTitle').textContent = titles[tab];
+  const titles = {
+    dashboard : 'Dashboard',
+    siswa     : 'Data Siswa',
+    qr        : 'Generate QR',
+    absensi   : 'Rekap Absensi',
+    jadwal    : 'Jadwal Materi',
+    profil    : 'Profil Saya'
+  };
+  document.getElementById('pageTitle').textContent = titles[tab] || tab;
   if (window.innerWidth < 768) toggleSidebar();
 }
 
+// ---- Mini Calendar ----
 function renderMiniCalendarAdmin() {
   const target = document.getElementById('miniCalendarAdmin');
   if (!target) return;
-  const now = new Date();
-  const monthName = now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
-  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).getDay();
-  const totalDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const dayNames = ['Mg', 'Sn', 'Sl', 'Rb', 'Km', 'Jm', 'Sb'];
-  const cells = [];
+  const now      = new Date();
+  const monthName = now.toLocaleDateString('id-ID', { month:'long', year:'numeric' });
+  const firstDay  = new Date(now.getFullYear(), now.getMonth(), 1).getDay();
+  const totalDay  = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const dayNames  = ['Mg','Sn','Sl','Rb','Km','Jm','Sb'];
+  const cells     = [];
   for (let i = 0; i < firstDay; i++) cells.push('<div></div>');
   for (let d = 1; d <= totalDay; d++) {
     const cls = d === now.getDate() ? 'mini-cal-date today' : 'mini-cal-date';
@@ -679,38 +671,31 @@ function renderMiniCalendarAdmin() {
   `;
 }
 
-// Load stats
+// ---- Stats ----
 async function loadStats() {
   try {
-    const res = await fetch('dashboard_admin.php?action=get_stats', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const res  = await fetch('dashboard_admin.php?action=get_stats', { headers:{'X-Requested-With':'XMLHttpRequest'} });
     const data = await res.json();
     if (data.success) {
-      document.getElementById('s-totalSiswa').textContent = data.total_siswa || 0;
+      document.getElementById('s-totalSiswa').textContent   = data.total_siswa   || 0;
       document.getElementById('s-hadirHariIni').textContent = data.hadir_hari_ini || 0;
-      document.getElementById('s-totalUsers').textContent = data.total_users || 0;
-      document.getElementById('s-activeToken').textContent = data.active_token || 0;
-    } else {
-      console.error('Failed to load stats:', data);
+      document.getElementById('s-totalUsers').textContent   = data.total_users   || 0;
+      document.getElementById('s-activeToken').textContent  = data.active_token  || 0;
     }
   } catch (err) {
     console.error('Error loading stats:', err);
-    // Fallback values
-    document.getElementById('s-totalSiswa').textContent = '0';
-    document.getElementById('s-hadirHariIni').textContent = '0';
-    document.getElementById('s-totalUsers').textContent = '0';
-    document.getElementById('s-activeToken').textContent = '0';
+    ['s-totalSiswa','s-hadirHariIni','s-totalUsers','s-activeToken'].forEach(id => {
+      document.getElementById(id).textContent = '0';
+    });
   }
 }
 
-// Load siswa
+// ---- Siswa ----
 async function loadSiswa() {
   try {
-    const res = await fetch('dashboard_admin.php?action=get_students', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const res  = await fetch('dashboard_admin.php?action=get_students', { headers:{'X-Requested-With':'XMLHttpRequest'} });
     const data = await res.json();
-    if (data.success) {
-      siswaData = data.data;
-      renderSiswaTable(siswaData);
-    }
+    if (data.success) { siswaData = data.data; renderSiswaTable(siswaData); }
   } catch (err) {
     document.getElementById('siswaTableWrap').innerHTML = '<div class="empty-state">Gagal memuat data siswa. Coba refresh.</div>';
   }
@@ -723,14 +708,14 @@ function renderSiswaTable(list) {
     <table class="data-table">
       <thead><tr><th>#</th><th>NIS</th><th>Nama</th><th>Aksi</th></tr></thead>
       <tbody>
-        ${list.map((s,i) => `
+        ${list.map((s, i) => `
           <tr>
-            <td>${i+1}</td>
+            <td>${i + 1}</td>
             <td><span class="badge-nis">${escapeHTML(s.nis)}</span></td>
             <td>${escapeHTML(s.nama)}</td>
             <td class="action-cell">
               <button class="btn-secondary-sm" onclick="editSiswa('${encodeURIComponent(s.nis)}','${encodeURIComponent(s.nama)}')">Edit</button>
-              <button class="btn-danger-sm" onclick="deleteSiswa('${encodeURIComponent(s.nis)}','${encodeURIComponent(s.nama)}')">Hapus</button>
+              <button class="btn-danger-sm"    onclick="deleteSiswa('${encodeURIComponent(s.nis)}','${encodeURIComponent(s.nama)}')">Hapus</button>
             </td>
           </tr>`).join('')}
       </tbody>
@@ -738,24 +723,18 @@ function renderSiswaTable(list) {
 }
 
 function editSiswa(nis, nama) {
-  nis = decodeURIComponent(nis);
+  nis  = decodeURIComponent(nis);
   nama = decodeURIComponent(nama);
   const newName = prompt('Ubah nama siswa:', nama);
   if (newName === null || newName.trim() === '') return;
   const fd = new FormData();
   fd.append('action', 'edit_student');
-  fd.append('nis', nis);
-  fd.append('nama', newName.trim());
-  fetch('dashboard_admin.php', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd })
-    .then(res => res.json())
-    .then(data => {
-      showToast(data.message, data.success ? 'success' : 'error');
-      if (data.success) loadSiswa();
-    })
-    .catch(err => {
-      console.error(err);
-      showToast('Gagal mengubah data siswa', 'error');
-    });
+  fd.append('nis',    nis);
+  fd.append('nama',   newName.trim());
+  fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd })
+    .then(r => r.json())
+    .then(data => { showToast(data.message, data.success ? 'success' : 'error'); if (data.success) loadSiswa(); })
+    .catch(() => showToast('Gagal mengubah data siswa', 'error'));
 }
 
 function filterSiswa() {
@@ -763,59 +742,50 @@ function filterSiswa() {
   renderSiswaTable(siswaData.filter(s => s.nama.toLowerCase().includes(q) || s.nis.toLowerCase().includes(q)));
 }
 
-// Add siswa
 document.getElementById('addSiswaForm').addEventListener('submit', async function(e) {
   e.preventDefault();
-  const nisInput = document.getElementById('newNis');
-  const namaInput = document.getElementById('newNama');
-  if (!nisInput.value.trim() || !namaInput.value.trim()) {
-    showToast('Isi NIS dan nama siswa terlebih dahulu.', 'warning');
-    return;
-  }
+  const nis  = document.getElementById('newNis').value.trim();
+  const nama = document.getElementById('newNama').value.trim();
+  if (!nis || !nama) { showToast('Isi NIS dan nama siswa terlebih dahulu.', 'warning'); return; }
   const fd = new FormData();
-  fd.append('action','add_student');
-  fd.append('nis', nisInput.value.trim());
-  fd.append('nama', namaInput.value.trim());
-  const res = await fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
+  fd.append('action', 'add_student');
+  fd.append('nis',   nis);
+  fd.append('nama',  nama);
+  const res  = await fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
   const data = await res.json();
   showToast(data.message, data.success ? 'success' : 'error');
   if (data.success) { this.reset(); loadSiswa(); loadStats(); }
 });
 
-// Delete siswa
 async function deleteSiswa(nis, nama) {
-  nis = decodeURIComponent(nis);
+  nis  = decodeURIComponent(nis);
   nama = decodeURIComponent(nama);
   if (!confirm(`Hapus siswa ${nama} (${nis})?`)) return;
   const fd = new FormData();
-  fd.append('action','delete_student');
+  fd.append('action', 'delete_student');
   fd.append('nis', nis);
-  const res = await fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
+  const res  = await fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
   const data = await res.json();
   showToast(data.message, data.success ? 'success' : 'error');
   if (data.success) { loadSiswa(); loadStats(); }
 }
 
-// Load absensi
+// ---- Absensi ----
 async function loadAbsensi() {
   try {
-    const res = await fetch('dashboard_admin.php?action=get_absensi', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const res  = await fetch('dashboard_admin.php?action=get_absensi', { headers:{'X-Requested-With':'XMLHttpRequest'} });
     const data = await res.json();
-
     const makeTable = (id) => {
       const wrap = document.getElementById(id);
       if (!wrap) return;
-      if (!data.data || !data.data.length) {
-        wrap.innerHTML = '<div class="empty-state">Belum ada data absensi</div>';
-        return;
-      }
+      if (!data.data || !data.data.length) { wrap.innerHTML = '<div class="empty-state">Belum ada data absensi</div>'; return; }
       wrap.innerHTML = `
         <table class="data-table">
           <thead><tr><th>#</th><th>NIS</th><th>Nama</th><th>Tanggal</th><th>Waktu</th><th>Status</th></tr></thead>
           <tbody>
-            ${data.data.map((a,i) => `
+            ${data.data.map((a, i) => `
               <tr>
-                <td>${i+1}</td>
+                <td>${i + 1}</td>
                 <td><span class="badge-nis">${escapeHTML(a.nis || '')}</span></td>
                 <td>${escapeHTML(a.nama || a.nis || '')}</td>
                 <td>${escapeHTML(a.tanggal || '')}</td>
@@ -834,109 +804,50 @@ async function loadAbsensi() {
   }
 }
 
+// ---- Chart ----
 async function loadWeeklyChart() {
   try {
-    const res = await fetch('dashboard_admin.php?action=get_weekly_chart', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const res  = await fetch('dashboard_admin.php?action=get_weekly_chart', { headers:{'X-Requested-With':'XMLHttpRequest'} });
     const data = await res.json();
-    if (!data.success) {
-      console.error('Failed to load chart data:', data);
-      return;
-    }
+    if (!data.success) return;
     const ctx = document.getElementById('weeklyChartAdmin');
-    if (!ctx) {
-      console.error('Chart canvas not found');
-      return;
-    }
+    if (!ctx) return;
     if (weeklyChartAdmin) weeklyChartAdmin.destroy();
-
-    // Grafik sederhana dengan Chart.js
     weeklyChartAdmin = new Chart(ctx, {
       type: 'bar',
       data: {
         labels: data.labels,
-        datasets: [{
-          label: 'Hadir',
-          data: data.hadir,
-          backgroundColor: 'rgba(99, 102, 241, 0.8)',
-          borderColor: '#6366F1',
-          borderWidth: 1,
-          borderRadius: 4,
-          borderSkipped: false,
-        }, {
-          label: 'Tugas Selesai',
-          data: data.tugas_done,
-          backgroundColor: 'rgba(16, 185, 129, 0.8)',
-          borderColor: '#10B981',
-          borderWidth: 1,
-          borderRadius: 4,
-          borderSkipped: false,
-        }]
+        datasets: [
+          { label:'Hadir',         data:data.hadir,      backgroundColor:'rgba(99,102,241,0.8)',  borderColor:'#6366F1', borderWidth:1, borderRadius:4, borderSkipped:false },
+          { label:'Tugas Selesai', data:data.tugas_done, backgroundColor:'rgba(16,185,129,0.8)', borderColor:'#10B981', borderWidth:1, borderRadius:4, borderSkipped:false }
+        ]
       },
       options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        aspectRatio: 1,
-        animation: false,
+        responsive:true, maintainAspectRatio:false, animation:false,
         plugins: {
-          legend: {
-            position: 'top',
-            labels: {
-              boxWidth: 12,
-              padding: 16,
-            }
-          },
-          title: {
-            display: false
-          },
-          tooltip: {
-            backgroundColor: 'rgba(0,0,0,0.8)',
-            titleColor: '#fff',
-            bodyColor: '#fff',
-            cornerRadius: 6,
-            displayColors: true
-          }
+          legend: { position:'top', labels:{ boxWidth:12, padding:16 } },
+          tooltip: { backgroundColor:'rgba(0,0,0,0.8)', titleColor:'#fff', bodyColor:'#fff', cornerRadius:6 }
         },
         scales: {
-          x: {
-            grid: { display: false },
-            ticks: { font: { size: 12 } }
-          },
-          y: {
-            beginAtZero: true,
-            ticks: { precision: 0, font: { size: 12 } },
-            grid: { color: 'rgba(148,163,184,0.18)' }
-          }
+          x: { grid:{ display:false }, ticks:{ font:{ size:12 } } },
+          y: { beginAtZero:true, ticks:{ precision:0, font:{ size:12 } }, grid:{ color:'rgba(148,163,184,0.18)' } }
         },
-        interaction: {
-          intersect: false,
-          mode: 'index'
-        }
+        interaction: { intersect:false, mode:'index' }
       }
     });
   } catch (err) {
     console.error('Error loading chart:', err);
-    // Fallback: tampilkan pesan error
-    const ctx = document.getElementById('weeklyChartAdmin');
-    if (ctx) {
-      ctx.style.display = 'none';
-      const parent = ctx.parentNode;
-      if (!parent.querySelector('.chart-error')) {
-        parent.innerHTML += '<div class="chart-error">Grafik tidak dapat dimuat. Periksa koneksi internet.</div>';
-      }
-    }
   }
 }
 
+// ---- Task Monitor ----
 async function loadTaskMonitor() {
   try {
-    const res = await fetch('dashboard_admin.php?action=get_task_monitor', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const res  = await fetch('dashboard_admin.php?action=get_task_monitor', { headers:{'X-Requested-With':'XMLHttpRequest'} });
     const data = await res.json();
     const wrap = document.getElementById('monitorWrap');
     if (!wrap) return;
-    if (!data.success || !data.data.length) {
-      wrap.innerHTML = '<div class="empty-state">Belum ada data monitoring siswa.</div>';
-      return;
-    }
+    if (!data.success || !data.data.length) { wrap.innerHTML = '<div class="empty-state">Belum ada data monitoring siswa.</div>'; return; }
     wrap.innerHTML = `
       <table class="data-table">
         <thead><tr><th>NIS</th><th>Nama</th><th>Hadir Hari Ini</th><th>Tugas Selesai</th></tr></thead>
@@ -947,72 +858,80 @@ async function loadTaskMonitor() {
               <td>${escapeHTML(row.nama)}</td>
               <td>${Number(row.hadir_hari_ini) > 0 ? 'Hadir' : 'Belum'}</td>
               <td>${escapeHTML(String(row.tugas_selesai))}</td>
-            </tr>
-          `).join('')}
+            </tr>`).join('')}
         </tbody>
-      </table>
-    `;
-  } catch (err) {
-    console.error(err);
-  }
+      </table>`;
+  } catch (err) { console.error(err); }
 }
 
+// ---- Jadwal ----
 async function loadSchedules() {
   const wrap = document.getElementById('scheduleWrap');
   try {
-    const res = await fetch('dashboard_admin.php?action=get_schedules', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const res  = await fetch('dashboard_admin.php?action=get_schedules', { headers:{'X-Requested-With':'XMLHttpRequest'} });
     const data = await res.json();
-    if (!data.success || !data.data.length) {
-      wrap.innerHTML = '<div class="empty-state">Belum ada jadwal materi.</div>';
-      return;
-    }
+    if (!data.success || !data.data.length) { wrap.innerHTML = '<div class="empty-state">Belum ada jadwal materi.</div>'; return; }
     wrap.innerHTML = `
       <table class="data-table">
         <thead><tr><th>Judul</th><th>Tanggal Materi</th><th>Deadline</th><th>Aksi</th></tr></thead>
         <tbody>
           ${data.data.map(j => `
             <tr>
-              <td>
-                <strong>${escapeHTML(j.judul)}</strong><br/>
-                <span class="section-subtitle">${escapeHTML(j.deskripsi || '-')}</span>
-              </td>
+              <td><strong>${escapeHTML(j.judul)}</strong><br/><span class="section-subtitle">${escapeHTML(j.deskripsi || '-')}</span></td>
               <td>${escapeHTML(j.tanggal_materi)}</td>
               <td>${escapeHTML(j.deadline_tugas)}</td>
               <td><button class="btn-danger-sm" onclick="deleteSchedule(${Number(j.id)})">Hapus</button></td>
-            </tr>
-          `).join('')}
+            </tr>`).join('')}
         </tbody>
-      </table>
-    `;
-  } catch (err) {
-    wrap.innerHTML = '<div class="empty-state">Gagal memuat jadwal.</div>';
-  }
+      </table>`;
+  } catch (err) { wrap.innerHTML = '<div class="empty-state">Gagal memuat jadwal.</div>'; }
 }
 
-// Generate QR
+document.getElementById('scheduleForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const fd = new FormData();
+  fd.append('action',         'add_schedule');
+  fd.append('judul',          document.getElementById('jadwalJudul').value.trim());
+  fd.append('deskripsi',      document.getElementById('jadwalDesk').value.trim());
+  fd.append('tanggal_materi', document.getElementById('jadwalTanggal').value);
+  fd.append('deadline_tugas', document.getElementById('jadwalDeadline').value);
+  const res  = await fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
+  const data = await res.json();
+  showToast(data.message, data.success ? 'success' : 'error');
+  if (data.success) { this.reset(); document.getElementById('jadwalDesk').value = ''; loadSchedules(); }
+});
+
+async function deleteSchedule(id) {
+  if (!confirm('Hapus jadwal materi ini?')) return;
+  const fd = new FormData();
+  fd.append('action', 'delete_schedule');
+  fd.append('id',     String(id));
+  const res  = await fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
+  const data = await res.json();
+  showToast(data.message, data.success ? 'success' : 'error');
+  if (data.success) loadSchedules();
+}
+
+// ---- Generate QR ----
 async function generateQR() {
-  const res = await fetch('dashboard_admin.php?action=generate_qr', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+  const res  = await fetch('dashboard_admin.php?action=generate_qr', { headers:{'X-Requested-With':'XMLHttpRequest'} });
   const data = await res.json();
   if (!data.success) { showToast('Gagal generate QR', 'error'); return; }
 
-  // Render QR Code
   document.getElementById('qrCanvas').innerHTML = '';
   new QRCode(document.getElementById('qrCanvas'), {
-    text: data.token,
-    width: 220, height: 220,
-    colorDark: '#1a1a2e', colorLight: '#ffffff',
+    text: data.token, width:220, height:220,
+    colorDark:'#1a1a2e', colorLight:'#ffffff',
     correctLevel: QRCode.CorrectLevel.H
   });
-
   document.getElementById('qrTokenText').textContent = data.token.substring(0, 20) + '...';
-  document.getElementById('qrResult').style.display = 'block';
+  document.getElementById('qrResult').style.display  = 'block';
 
-  // Countdown timer
   if (qrTimer) clearInterval(qrTimer);
   let seconds = data.expires_in;
   function updateTimer() {
-    const m = Math.floor(seconds / 60).toString().padStart(2,'0');
-    const s = (seconds % 60).toString().padStart(2,'0');
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = (seconds % 60).toString().padStart(2, '0');
     document.getElementById('qrCountdown').textContent = `${m}:${s}`;
     if (seconds <= 0) {
       clearInterval(qrTimer);
@@ -1027,61 +946,29 @@ async function generateQR() {
   loadStats();
 }
 
-// Logout
-async function doLogout() {
-  if (!confirm('Yakin ingin logout?')) return;
-  const fd = new FormData(); fd.append('action','logout');
-  const res = await fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
-  const data = await res.json();
-  if (data.success) window.location.href = data.redirect;
-}
-
+// ---- Tambah Akun ----
 document.getElementById('addAccountForm').addEventListener('submit', async function(e) {
   e.preventDefault();
   const fd = new FormData();
-  fd.append('action', 'add_account');
-  fd.append('nis', document.getElementById('accNis').value.trim());
-  fd.append('nama', document.getElementById('accNama').value.trim());
-  fd.append('password', document.getElementById('accPassword').value.trim());
-  fd.append('role', document.getElementById('accRole').value);
-  const res = await fetch('dashboard_admin.php', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
+  fd.append('action',   'add_account');
+  fd.append('nis',      document.getElementById('accNis').value.trim());
+  fd.append('nama',     document.getElementById('accNama').value.trim());
+  fd.append('password', document.getElementById('accPassword').value);
+  fd.append('role',     document.getElementById('accRole').value);
+  const res  = await fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
   const data = await res.json();
   showToast(data.message, data.success ? 'success' : 'error');
   if (data.success) this.reset();
 });
 
-document.getElementById('scheduleForm').addEventListener('submit', async function(e) {
-  e.preventDefault();
-  const fd = new FormData();
-  fd.append('action', 'add_schedule');
-  fd.append('judul', document.getElementById('jadwalJudul').value.trim());
-  fd.append('deskripsi', document.getElementById('jadwalDesk').value.trim());
-  fd.append('tanggal_materi', document.getElementById('jadwalTanggal').value);
-  fd.append('deadline_tugas', document.getElementById('jadwalDeadline').value);
-  const res = await fetch('dashboard_admin.php', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
-  const data = await res.json();
-  showToast(data.message, data.success ? 'success' : 'error');
-  if (data.success) { this.reset(); document.getElementById('jadwalDesk').value = ''; loadSchedules(); }
-});
-
-async function deleteSchedule(id) {
-  if (!confirm('Hapus jadwal materi ini?')) return;
-  const fd = new FormData();
-  fd.append('action', 'delete_schedule');
-  fd.append('id', String(id));
-  const res = await fetch('dashboard_admin.php', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
-  const data = await res.json();
-  showToast(data.message, data.success ? 'success' : 'error');
-  if (data.success) loadSchedules();
-}
-
+// ---- Profil ----
 document.getElementById('profileForm').addEventListener('submit', async function(e) {
   e.preventDefault();
   const fd = new FormData();
-  fd.append('action', 'save_profile');
-  fd.append('nama', document.getElementById('profileNama').value.trim());
+  fd.append('action',       'save_profile');
+  fd.append('nama',         document.getElementById('profileNama').value.trim());
   fd.append('password_baru', document.getElementById('profilePass').value);
-  const res = await fetch('dashboard_admin.php', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
+  const res  = await fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
   const data = await res.json();
   showToast(data.message, data.success ? 'success' : 'error');
   if (data.success) {
@@ -1090,13 +977,22 @@ document.getElementById('profileForm').addEventListener('submit', async function
   }
 });
 
-// Sidebar toggle
+// ---- Logout ----
+async function doLogout() {
+  if (!confirm('Yakin ingin logout?')) return;
+  const fd = new FormData(); fd.append('action', 'logout');
+  const res  = await fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
+  const data = await res.json();
+  if (data.success) window.location.href = data.redirect;
+}
+
+// ---- Sidebar toggle ----
 function toggleSidebar() {
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('overlay').classList.toggle('show');
 }
 
-// Utility
+// ---- Utility ----
 function escapeHTML(str) {
   if (str == null) return '';
   const div = document.createElement('div');

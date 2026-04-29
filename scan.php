@@ -7,12 +7,22 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'student') {
     exit;
 }
 
+require 'koneksi.php';
+$profilePhone = '';
+$profilePhoto = '';
+$stmtProfile = $pdo->prepare("SELECT phone, profile_photo FROM users WHERE id = ? LIMIT 1");
+$stmtProfile->execute([(int) $_SESSION['user_id']]);
+$userProfile = $stmtProfile->fetch();
+if ($userProfile) {
+    $profilePhone = $userProfile['phone'] ?? '';
+    $profilePhoto = $userProfile['profile_photo'] ?? '';
+}
+
 // Get student history via AJAX
 if (
     isset($_SERVER['HTTP_X_REQUESTED_WITH'])
     && strtolower((string) $_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest'
 ) {
-    require 'koneksi.php';
     header('Content-Type: application/json');
     $action = $_GET['action'] ?? $_POST['action'] ?? '';
 
@@ -78,18 +88,61 @@ if (
     }
 
     if ($action === 'save_profile') {
-        $nama = trim((string) ($_POST['nama'] ?? ''));
+        $nama        = trim((string) ($_POST['nama'] ?? ''));
         $passwordBaru = (string) ($_POST['password_baru'] ?? '');
+        $phone       = trim((string) ($_POST['phone'] ?? ''));
         if ($nama === '') {
             echo json_encode(['success' => false, 'message' => 'Nama tidak boleh kosong.']);
             exit;
         }
-        $pdo->prepare("UPDATE users SET nama = ? WHERE id = ?")->execute([$nama, (int) $_SESSION['user_id']]);
+        if ($phone !== '' && !preg_match('/^[0-9\+\-\s]{6,20}$/', $phone)) {
+            echo json_encode(['success' => false, 'message' => 'Nomor HP tidak valid.']);
+            exit;
+        }
+
+        $fields = ['nama = ?', 'phone = ?'];
+        $params = [$nama, $phone];
+        $photoPath = null;
+
+        if (!empty($_FILES['photo']['name']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
+            $allowed = ['jpg', 'jpeg', 'png', 'webp'];
+            $fileInfo = pathinfo($_FILES['photo']['name']);
+            $ext = strtolower($fileInfo['extension'] ?? '');
+            if (!in_array($ext, $allowed, true)) {
+                echo json_encode(['success' => false, 'message' => 'Format foto hanya JPG, PNG, atau WEBP.']);
+                exit;
+            }
+            $uploadDir = __DIR__ . '/uploads/profiles';
+            if (!is_dir($uploadDir)) {
+                mkdir($uploadDir, 0755, true);
+            }
+            $fileName = 'user_' . (int) $_SESSION['user_id'] . '_' . time() . '.' . $ext;
+            $dest = $uploadDir . '/' . $fileName;
+            if (!move_uploaded_file($_FILES['photo']['tmp_name'], $dest)) {
+                echo json_encode(['success' => false, 'message' => 'Gagal mengunggah foto profil.']);
+                exit;
+            }
+            $photoPath = 'uploads/profiles/' . $fileName;
+            $fields[] = 'profile_photo = ?';
+            $params[] = $photoPath;
+
+            $oldPhoto = $_SESSION['profile_photo'] ?? '';
+            if ($oldPhoto && strpos($oldPhoto, 'uploads/profiles/') === 0 && file_exists(__DIR__ . '/' . $oldPhoto)) {
+                @unlink(__DIR__ . '/' . $oldPhoto);
+            }
+        }
+
+        $params[] = (int) $_SESSION['user_id'];
+        $pdo->prepare('UPDATE users SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
         $_SESSION['nama'] = $nama;
+        $_SESSION['phone'] = $phone;
+        if ($photoPath !== null) {
+            $_SESSION['profile_photo'] = $photoPath;
+        }
         if ($passwordBaru !== '') {
             $pdo->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([password_hash($passwordBaru, PASSWORD_BCRYPT), (int) $_SESSION['user_id']]);
         }
-        echo json_encode(['success' => true, 'message' => 'Profil berhasil diperbarui.', 'nama' => $nama]);
+        echo json_encode(['success' => true, 'message' => 'Profil berhasil diperbarui.', 'nama' => $nama, 'phone' => $phone, 'photo' => $photoPath]);
         exit;
     }
 
@@ -137,10 +190,19 @@ if (
 
   <!-- STUDENT INFO CARD -->
   <div class="student-card fade-in">
-    <div class="student-avatar"><?= strtoupper(substr($_SESSION['nama'], 0, 1)) ?></div>
+    <div class="student-avatar">
+      <?php if (!empty($profilePhoto)): ?>
+        <img src="<?= htmlspecialchars($profilePhoto) ?>" alt="Foto Profil" />
+      <?php else: ?>
+        <?= strtoupper(substr($_SESSION['nama'], 0, 1)) ?>
+      <?php endif; ?>
+    </div>
     <div class="student-details">
       <span class="student-name"><?= htmlspecialchars($_SESSION['nama']) ?></span>
       <span class="student-nis">NIS: <?= htmlspecialchars($_SESSION['nis']) ?></span>
+      <?php if (!empty($profilePhone)): ?>
+        <span class="student-phone">HP: <?= htmlspecialchars($profilePhone) ?></span>
+      <?php endif; ?>
     </div>
     <div class="student-status-indicator" id="statusIndicator">
       <span class="status-dot"></span>
@@ -191,12 +253,28 @@ if (
 
   <div class="card fade-in">
     <div class="card-header"><h3>Edit Profil Saya</h3></div>
-    <form id="profileFormStudent" class="form-grid">
-      <div class="input-wrap">
-        <input type="text" id="studentNama" value="<?= htmlspecialchars($_SESSION['nama']) ?>" required/>
+    <form id="profileFormStudent" class="form-grid" enctype="multipart/form-data">
+      <div class="profile-card">
+        <div class="profile-photo-box">
+          <?php if (!empty($profilePhoto)): ?>
+            <img id="profilePreview" src="<?= htmlspecialchars($profilePhoto) ?>" alt="Profil" />
+          <?php else: ?>
+            <div id="profilePreview" class="profile-fallback"><?= strtoupper(substr($_SESSION['nama'], 0, 1)) ?></div>
+          <?php endif; ?>
+        </div>
+        <div class="profile-photo-label">Foto Profil</div>
       </div>
       <div class="input-wrap">
-        <input type="password" id="studentPassBaru" placeholder="Password baru (opsional)"/>
+        <input type="text" id="studentNama" name="nama" value="<?= htmlspecialchars($_SESSION['nama']) ?>" placeholder="Nama lengkap" required/>
+      </div>
+      <div class="input-wrap">
+        <input type="text" id="studentPhone" name="phone" value="<?= htmlspecialchars($profilePhone) ?>" placeholder="No HP (misal +6281234567890)"/>
+      </div>
+      <div class="input-wrap">
+        <input type="file" id="studentPhoto" name="photo" accept="image/png,image/jpeg,image/webp"/>
+      </div>
+      <div class="input-wrap">
+        <input type="password" id="studentPassBaru" name="password_baru" placeholder="Password baru (opsional)"/>
       </div>
       <button class="btn-primary" type="submit">Simpan Perubahan Profil</button>
     </form>
@@ -230,24 +308,36 @@ let weeklyChartStudent = null;
 // Start QR scanner
 async function startScanner() {
   if (scanning) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    showToast('Browser Anda tidak mendukung akses kamera. Gunakan browser terbaru.', 'error');
+    return;
+  }
 
   try {
-    html5QrCode = new Html5Qrcode("qr-reader");
+    const cameras = await Html5Qrcode.getCameras();
+    if (!cameras || !cameras.length) {
+      showToast('Tidak ada kamera yang tersedia. Pastikan kamera aktif.', 'error');
+      return;
+    }
+
+    const selectedCamera = cameras.find(cam => /back|rear|belakang/i.test(cam.label)) || cameras[0];
+    html5QrCode = new Html5Qrcode('qr-reader');
     const config = { fps: 10, qrbox: { width: 220, height: 220 }, aspectRatio: 1.0 };
 
-    await html5QrCode.start(
-      { facingMode: "environment" },
-      config,
-      onScanSuccess,
-      onScanError
-    );
-
+    await html5QrCode.start(selectedCamera.id, config, onScanSuccess, onScanError);
     scanning = true;
     document.getElementById('startBtn').style.display = 'none';
     document.getElementById('stopBtn').style.display = 'flex';
-    showToast('Kamera aktif. Arahkan ke QR Code.', 'info');
-  } catch(err) {
-    showToast('Gagal akses kamera: ' + err, 'error');
+    showToast('Kamera aktif. Arahkan ke QR Code.', 'success');
+  } catch (err) {
+    const message = err?.message || String(err);
+    const errorMessage = /permission|denied|not allowed/i.test(message)
+      ? 'Izin kamera ditolak. Coba izinkan akses kamera di pengaturan browser.'
+      : /notfound|NotFound|No cameras/i.test(message)
+        ? 'Tidak ditemukan kamera yang dapat digunakan.'
+        : message;
+    showToast('Gagal mengaktifkan kamera: ' + errorMessage, 'error');
+    html5QrCode = null;
   }
 }
 
@@ -419,21 +509,53 @@ async function doLogout() {
   if (data.success) window.location.href = data.redirect;
 }
 
-document.getElementById('profileFormStudent').addEventListener('submit', async function(e) {
-  e.preventDefault();
-  const fd = new FormData();
-  fd.append('action', 'save_profile');
-  fd.append('nama', document.getElementById('studentNama').value.trim());
-  fd.append('password_baru', document.getElementById('studentPassBaru').value);
-  const res = await fetch('scan.php', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
-  const data = await res.json();
-  showToast(data.message, data.success ? 'success' : 'error');
-  if (data.success) {
-    document.querySelector('.scan-user-name').textContent = data.nama;
-    document.querySelector('.student-name').textContent = data.nama;
-    document.getElementById('studentPassBaru').value = '';
-  }
-});
+const scanProfileForm = document.getElementById('profileFormStudent');
+if (scanProfileForm) {
+  scanProfileForm.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    fd.append('action', 'save_profile');
+
+    const res = await fetch('scan.php', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
+    const data = await res.json();
+    showToast(data.message, data.success ? 'success' : 'error');
+    if (data.success) {
+      document.querySelector('.scan-user-name').textContent = data.nama;
+      document.querySelector('.student-name').textContent = data.nama;
+      document.getElementById('studentPassBaru').value = '';
+      if (data.photo) {
+        const avatar = document.querySelector('.student-avatar');
+        if (avatar) {
+          avatar.innerHTML = `<img src="${escapeHTML(data.photo)}" alt="Foto Profil" />`;
+        }
+      }
+    }
+  });
+}
+
+const scanPhotoInput = document.getElementById('studentPhoto');
+if (scanPhotoInput) {
+  scanPhotoInput.addEventListener('change', function() {
+    const preview = document.getElementById('profilePreview');
+    if (!preview || !this.files || !this.files[0]) return;
+    const file = this.files[0];
+    if (!file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (preview.tagName === 'IMG') {
+        preview.src = reader.result;
+      } else {
+        const img = document.createElement('img');
+        img.id = 'profilePreview';
+        img.src = reader.result;
+        img.alt = 'Preview Profil';
+        img.className = 'profile-photo-img';
+        preview.replaceWith(img);
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 // Init
 document.addEventListener('DOMContentLoaded', () => {

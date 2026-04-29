@@ -17,6 +17,21 @@ $options = [
 
 try {
     $pdo = new PDO($dsn, DB_USER, DB_PASS, $options);
+
+    // Optional migration: add profile fields if missing
+    $hasUsersTable = $pdo->query("SHOW TABLES LIKE 'users'")->rowCount() > 0;
+    if ($hasUsersTable) {
+        $columns = [
+            'phone' => 'VARCHAR(20) NULL AFTER password',
+            'profile_photo' => 'VARCHAR(255) NULL AFTER phone'
+        ];
+        foreach ($columns as $column => $definition) {
+            $stmt = $pdo->query("SHOW COLUMNS FROM users LIKE '$column'");
+            if ($stmt && $stmt->rowCount() === 0) {
+                $pdo->exec("ALTER TABLE users ADD COLUMN $column $definition");
+            }
+        }
+    }
 } catch (PDOException $e) {
     http_response_code(500);
     $isAjax = isset($_SERVER['HTTP_X_REQUESTED_WITH']);

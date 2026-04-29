@@ -33,6 +33,8 @@ if (
         $_SESSION['nis']     = $user['nis'];
         $_SESSION['nama']    = $user['nama'];
         $_SESSION['role']    = $user['role'];
+        $_SESSION['phone']   = $user['phone'] ?? '';
+        $_SESSION['profile_photo'] = $user['profile_photo'] ?? '';
 
         $redirect = $user['role'] === 'admin' ? 'dashboard_admin.php' : 'dashboard_student.php';
         echo json_encode(['success' => true, 'redirect' => $redirect]);
