@@ -93,11 +93,15 @@ if (
     }
 
     if ($action === 'generate_qr') {
+        $type = strtolower(trim((string) ($_GET['type'] ?? $_POST['type'] ?? 'start')));
+        if (!in_array($type, ['start', 'end'], true)) {
+            $type = 'start';
+        }
         $pdo->exec("DELETE FROM qr_sessions WHERE expired_at < NOW()");
         $token     = bin2hex(random_bytes(24));
         $expiredAt = date('Y-m-d H:i:s', time() + 600);
-        $pdo->prepare("INSERT INTO qr_sessions (token, expired_at) VALUES (?, ?)")->execute([$token, $expiredAt]);
-        echo json_encode(['success' => true, 'token' => $token, 'expired_at' => $expiredAt, 'expires_in' => 600]);
+        $pdo->prepare("INSERT INTO qr_sessions (token, expired_at, type) VALUES (?, ?, ?)")->execute([$token, $expiredAt, $type]);
+        echo json_encode(['success' => true, 'token' => $token, 'expired_at' => $expiredAt, 'expires_in' => 600, 'type' => $type]);
         exit;
     }
 
@@ -112,6 +116,10 @@ if (
         echo json_encode(['success' => true, 'data' => $stmt->fetchAll()]);
         exit;
     }
+
+    // FIX 1: download_absensi — harus bisa diakses via GET biasa (non-AJAX),
+    // dipindahkan ke luar blok AJAX agar header CSV tidak terhalang JSON check.
+    // (Handler ini tetap di sini untuk kompatibilitas panggilan AJAX jika ada)
 
     if ($action === 'get_weekly_chart') {
         $labels = []; $hadir = []; $tugasDone = [];
@@ -207,11 +215,41 @@ if (
     }
 
     if ($action === 'get_stats') {
-        $totalSiswa  = $pdo->query("SELECT COUNT(*) FROM data_siswa")->fetchColumn();
-        $totalHadir  = $pdo->query("SELECT COUNT(*) FROM absensi WHERE tanggal = CURDATE()")->fetchColumn();
-        $totalUsers  = $pdo->query("SELECT COUNT(*) FROM users WHERE role='student'")->fetchColumn();
-        $activeToken = $pdo->query("SELECT COUNT(*) FROM qr_sessions WHERE expired_at > NOW()")->fetchColumn();
-        echo json_encode(['success' => true, 'total_siswa' => $totalSiswa, 'hadir_hari_ini' => $totalHadir, 'total_users' => $totalUsers, 'active_token' => $activeToken]);
+        $totalSiswa  = (int) $pdo->query("SELECT COUNT(*) FROM data_siswa")->fetchColumn();
+        $totalHadir  = (int) $pdo->query("SELECT COUNT(*) FROM absensi WHERE tanggal = CURDATE()")->fetchColumn();
+        $totalUsers  = (int) $pdo->query("SELECT COUNT(*) FROM users WHERE role='student'")->fetchColumn();
+        $activeToken = (int) $pdo->query("SELECT COUNT(*) FROM qr_sessions WHERE expired_at > NOW()")->fetchColumn();
+
+        // Siswa yang BELUM punya akun
+        $belumAkun = max(0, $totalSiswa - $totalUsers);
+
+        // Persentase kehadiran hari ini (dari total siswa terdaftar)
+        $persenHadir = $totalSiswa > 0 ? round(($totalHadir / $totalSiswa) * 100) : 0;
+
+        // Absensi kemarin untuk perbandingan tren
+        $hadirKemarin = (int) $pdo->query("SELECT COUNT(*) FROM absensi WHERE tanggal = DATE_SUB(CURDATE(), INTERVAL 1 DAY)")->fetchColumn();
+        $trenHadir = $totalHadir - $hadirKemarin; // positif = naik, negatif = turun
+
+        // Sisa waktu token aktif (menit)
+        $tokenMenit = null;
+        if ($activeToken > 0) {
+            $stmtToken = $pdo->query("SELECT TIMESTAMPDIFF(MINUTE, NOW(), expired_at) AS sisa FROM qr_sessions WHERE expired_at > NOW() ORDER BY expired_at DESC LIMIT 1");
+            $tokenRow = $stmtToken->fetch();
+            $tokenMenit = $tokenRow ? max(0, (int)$tokenRow['sisa']) : null;
+        }
+
+        echo json_encode([
+            'success'       => true,
+            'total_siswa'   => $totalSiswa,
+            'hadir_hari_ini'=> $totalHadir,
+            'total_users'   => $totalUsers,
+            'active_token'  => $activeToken,
+            'belum_akun'    => $belumAkun,
+            'persen_hadir'  => $persenHadir,
+            'tren_hadir'    => $trenHadir,
+            'hadir_kemarin' => $hadirKemarin,
+            'token_menit'   => $tokenMenit,
+        ]);
         exit;
     }
 
@@ -220,6 +258,32 @@ if (
         echo json_encode(['success' => true, 'redirect' => 'login.php']);
         exit;
     }
+}
+
+// FIX 1: download_absensi dipindahkan ke luar blok AJAX
+// agar bisa diakses via window.location.href (request GET biasa)
+if (($_GET['action'] ?? '') === 'download_absensi') {
+    $stmt = $pdo->query("
+        SELECT a.nis, d.nama, a.tanggal, a.waktu, a.status
+        FROM absensi a
+        LEFT JOIN data_siswa d ON a.nis = d.nis
+        ORDER BY a.tanggal DESC, a.waktu DESC
+    ");
+    header('Content-Type: text/csv; charset=UTF-8');
+    header('Content-Disposition: attachment; filename="rekap_absensi.csv"');
+    echo "\xEF\xBB\xBF";
+    echo "NIS;Nama;Tanggal;Waktu;Status\r\n";
+    foreach ($stmt->fetchAll() as $row) {
+        $values = [
+            str_replace('"', '""', $row['nis'] ?? ''),
+            str_replace('"', '""', $row['nama'] ?? ''),
+            str_replace('"', '""', $row['tanggal'] ?? ''),
+            str_replace('"', '""', $row['waktu'] ?? ''),
+            str_replace('"', '""', $row['status'] ?? '')
+        ];
+        echo '"' . implode('";"', $values) . '"\r\n';
+    }
+    exit;
 }
 ?>
 <!DOCTYPE html>
@@ -317,7 +381,7 @@ if (
           <span class="hero-badge">🔐 Token Aman 10 Menit</span>
           <span class="hero-badge">⚡ Tanpa Reload Halaman</span>
         </div>
-      </div><!-- /hero-text -->
+      </div>
       <div class="hero-side">
         <div class="hero-circle">
           <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -326,8 +390,8 @@ if (
             <path d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1a2 2 0 0 1 2 2v1"/>
           </svg>
         </div>
-      </div><!-- /hero-side -->
-    </div><!-- /hero-banner -->
+      </div>
+    </div>
 
     <!-- Stats Grid -->
     <div class="stats-grid">
@@ -338,6 +402,7 @@ if (
         <div class="stat-info">
           <span class="stat-num" id="s-totalSiswa">-</span>
           <span class="stat-label">Total Siswa</span>
+          <span class="stat-desc" id="sd-totalSiswa" style="font-size:11px;opacity:.7;margin-top:2px;display:block;">Memuat...</span>
         </div>
       </div>
       <div class="stat-card green">
@@ -347,6 +412,7 @@ if (
         <div class="stat-info">
           <span class="stat-num" id="s-hadirHariIni">-</span>
           <span class="stat-label">Hadir Hari Ini</span>
+          <span class="stat-desc" id="sd-hadirHariIni" style="font-size:11px;opacity:.7;margin-top:2px;display:block;">Memuat...</span>
         </div>
       </div>
       <div class="stat-card yellow">
@@ -356,6 +422,7 @@ if (
         <div class="stat-info">
           <span class="stat-num" id="s-totalUsers">-</span>
           <span class="stat-label">Akun Siswa</span>
+          <span class="stat-desc" id="sd-totalUsers" style="font-size:11px;opacity:.7;margin-top:2px;display:block;">Memuat...</span>
         </div>
       </div>
       <div class="stat-card red">
@@ -365,9 +432,10 @@ if (
         <div class="stat-info">
           <span class="stat-num" id="s-activeToken">-</span>
           <span class="stat-label">Token Aktif</span>
+          <span class="stat-desc" id="sd-activeToken" style="font-size:11px;opacity:.7;margin-top:2px;display:block;">Memuat...</span>
         </div>
       </div>
-    </div><!-- /stats-grid -->
+    </div>
 
     <!-- Chart + Monitor -->
     <div class="qr-grid">
@@ -391,7 +459,7 @@ if (
           <div class="loading-placeholder">Memuat monitoring...</div>
         </div>
       </div>
-    </div><!-- /qr-grid -->
+    </div>
 
     <!-- Absensi Terkini -->
     <div class="card mt-20">
@@ -476,19 +544,32 @@ if (
   <!-- ==================== TAB: GENERATE QR ==================== -->
   <div id="tab-qr" class="tab-content">
     <div class="qr-grid">
+
+      <!-- FIX 2: Struktur div qr-gen-card diperbaiki — tag </div> penutup
+           qr-gen-card yang hilang menyebabkan konten tab lain ikut masuk
+           ke dalam card ini dan merusak rendering tab Jadwal & Absensi -->
       <div class="card qr-gen-card">
         <div class="card-header">
           <h3>Generate QR Absensi</h3>
         </div>
-        <p class="qr-hint">Token berlaku selama <strong>10 menit</strong>. Tampilkan ke layar kelas agar siswa bisa scan lebih cepat.</p>
-        <button class="btn-generate" onclick="generateQR()">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/><rect x="3" y="16" width="5" height="5"/><path d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1a2 2 0 0 1 2 2v1"/></svg>
-          Generate QR Code Baru
-        </button>
+        <p class="qr-hint">Token berlaku selama <strong>10 menit</strong>. Pilih jenis QR lalu tampilkan ke layar kelas agar siswa bisa scan lebih cepat.</p>
+        <div class="form-grid" style="grid-template-columns: 1fr auto; gap: 10px; align-items: center; margin-bottom: 14px;">
+          <div class="input-wrap">
+            <select id="qrType" class="select-transparent">
+              <option value="start">QR Absensi Masuk</option>
+              <option value="end">QR Selesai Jam</option>
+            </select>
+          </div>
+          <button class="btn-generate" onclick="generateQR()">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/><rect x="3" y="16" width="5" height="5"/><path d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1a2 2 0 0 1 2 2v1"/></svg>
+            Generate QR Code Baru
+          </button>
+        </div><!-- /form-grid -->
         <div id="qrResult" class="qr-result hidden">
           <div id="qrCanvas" class="qr-canvas"></div>
           <div class="qr-meta">
             <div class="qr-token-display">
+              <div class="qr-type-label" id="qrTypeLabel">Tipe: Masuk</div>
               <span class="mono" id="qrTokenText"></span>
             </div>
             <div class="qr-timer">
@@ -496,8 +577,8 @@ if (
               Berakhir dalam: <strong id="qrCountdown">10:00</strong>
             </div>
           </div>
-        </div>
-      </div>
+        </div><!-- /qrResult -->
+      </div><!-- /card qr-gen-card -->
 
       <div class="card">
         <div class="card-header"><h3>Panduan Penggunaan</h3></div>
@@ -531,7 +612,8 @@ if (
             </div>
           </div>
         </div>
-      </div>
+      </div><!-- /card panduan -->
+
     </div><!-- /qr-grid -->
   </div><!-- /tab-qr -->
 
@@ -540,10 +622,16 @@ if (
     <div class="card">
       <div class="card-header">
         <h3>Rekap Absensi</h3>
-        <button class="btn-refresh" onclick="loadAbsensi()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-          Refresh
-        </button>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-refresh" onclick="loadAbsensi()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            Refresh
+          </button>
+          <button class="btn-refresh" onclick="downloadAbsensi()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Download CSV
+          </button>
+        </div>
       </div>
       <div id="absensiFullTableWrap">
         <div class="loading-placeholder">Memuat data...</div>
@@ -552,6 +640,9 @@ if (
   </div><!-- /tab-absensi -->
 
   <!-- ==================== TAB: JADWAL ==================== -->
+  <!-- FIX 3: Input deskripsi dipindahkan ke DALAM tag <form>
+       Sebelumnya jadwalDesk berada di luar </form> sehingga
+       nilainya tidak terkirim saat form di-submit -->
   <div id="tab-jadwal" class="tab-content">
     <div class="card">
       <div class="card-header">
@@ -563,6 +654,9 @@ if (
           <input type="text" id="jadwalJudul" placeholder="Judul materi" required/>
         </div>
         <div class="input-wrap">
+          <input type="text" id="jadwalDesk" placeholder="Deskripsi / catatan materi (opsional)"/>
+        </div>
+        <div class="input-wrap">
           <input type="date" id="jadwalTanggal" required/>
         </div>
         <div class="input-wrap">
@@ -570,9 +664,6 @@ if (
         </div>
         <button class="btn-primary" type="submit">Tambah Jadwal</button>
       </form>
-      <div class="mt-20 input-wrap">
-        <input type="text" id="jadwalDesk" placeholder="Deskripsi / catatan materi (opsional)"/>
-      </div>
     </div>
     <div class="card mt-20">
       <div class="card-header"><h3>Daftar Jadwal Materi</h3></div>
@@ -609,8 +700,8 @@ if (
 // ============================================================
 // Dashboard Admin Script
 // ============================================================
-let siswaData      = [];
-let qrTimer        = null;
+let siswaData        = [];
+let qrTimer          = null;
 let weeklyChartAdmin = null;
 
 // ---- Init ----
@@ -653,7 +744,7 @@ function showTab(tab, el) {
 function renderMiniCalendarAdmin() {
   const target = document.getElementById('miniCalendarAdmin');
   if (!target) return;
-  const now      = new Date();
+  const now       = new Date();
   const monthName = now.toLocaleDateString('id-ID', { month:'long', year:'numeric' });
   const firstDay  = new Date(now.getFullYear(), now.getMonth(), 1).getDay();
   const totalDay  = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
@@ -677,15 +768,85 @@ async function loadStats() {
     const res  = await fetch('dashboard_admin.php?action=get_stats', { headers:{'X-Requested-With':'XMLHttpRequest'} });
     const data = await res.json();
     if (data.success) {
-      document.getElementById('s-totalSiswa').textContent   = data.total_siswa   || 0;
-      document.getElementById('s-hadirHariIni').textContent = data.hadir_hari_ini || 0;
-      document.getElementById('s-totalUsers').textContent   = data.total_users   || 0;
-      document.getElementById('s-activeToken').textContent  = data.active_token  || 0;
+      const totalSiswa  = data.total_siswa   || 0;
+      const hadir       = data.hadir_hari_ini || 0;
+      const totalUsers  = data.total_users   || 0;
+      const activeToken = data.active_token  || 0;
+      const belumAkun   = data.belum_akun    || 0;
+      const persen      = data.persen_hadir  || 0;
+      const tren        = data.tren_hadir;
+      const kemarin     = data.hadir_kemarin || 0;
+      const tokenMenit  = data.token_menit;
+
+      // --- Angka utama ---
+      document.getElementById('s-totalSiswa').textContent   = totalSiswa;
+      document.getElementById('s-hadirHariIni').textContent = hadir;
+      document.getElementById('s-totalUsers').textContent   = totalUsers;
+      document.getElementById('s-activeToken').textContent  = activeToken;
+
+      // --- Keterangan Total Siswa ---
+      let descSiswa = '';
+      if (totalSiswa === 0) {
+        descSiswa = '⚠️ Belum ada siswa terdaftar';
+      } else if (belumAkun === 0) {
+        descSiswa = '✅ Semua siswa sudah punya akun';
+      } else {
+        descSiswa = `⚠️ ${belumAkun} siswa belum punya akun`;
+      }
+      document.getElementById('sd-totalSiswa').textContent = descSiswa;
+
+      // --- Keterangan Hadir Hari Ini ---
+      let descHadir = '';
+      if (totalSiswa === 0) {
+        descHadir = 'Belum ada data siswa';
+      } else if (hadir === 0) {
+        descHadir = '❌ Belum ada yang absen hari ini';
+      } else {
+        let trenIcon = '';
+        if (tren > 0)       trenIcon = ` ▲${tren} vs kemarin`;
+        else if (tren < 0)  trenIcon = ` ▼${Math.abs(tren)} vs kemarin`;
+        else                trenIcon = ` = sama seperti kemarin (${kemarin})`;
+
+        if (persen === 100)       descHadir = `✅ ${persen}% hadir${trenIcon}`;
+        else if (persen >= 75)    descHadir = `🟡 ${persen}% hadir${trenIcon}`;
+        else                      descHadir = `🔴 ${persen}% hadir${trenIcon}`;
+      }
+      document.getElementById('sd-hadirHariIni').textContent = descHadir;
+
+      // --- Keterangan Akun Siswa ---
+      let descUsers = '';
+      if (totalSiswa === 0) {
+        descUsers = 'Belum ada data siswa';
+      } else if (totalUsers === 0) {
+        descUsers = '❌ Belum ada akun yang dibuat';
+      } else if (belumAkun === 0) {
+        descUsers = `✅ ${totalUsers} dari ${totalSiswa} siswa`;
+      } else {
+        const persenAkun = Math.round((totalUsers / totalSiswa) * 100);
+        descUsers = `${persenAkun}% terdaftar · ${belumAkun} belum`;
+      }
+      document.getElementById('sd-totalUsers').textContent = descUsers;
+
+      // --- Keterangan Token Aktif ---
+      let descToken = '';
+      if (activeToken === 0) {
+        descToken = '💤 Tidak ada sesi absensi aktif';
+      } else if (tokenMenit !== null && tokenMenit <= 2) {
+        descToken = `⏰ Hampir habis! Sisa ±${tokenMenit} mnt`;
+      } else if (tokenMenit !== null) {
+        descToken = `✅ Sesi aktif · sisa ±${tokenMenit} mnt`;
+      } else {
+        descToken = `✅ ${activeToken} sesi sedang berjalan`;
+      }
+      document.getElementById('sd-activeToken').textContent = descToken;
     }
   } catch (err) {
     console.error('Error loading stats:', err);
     ['s-totalSiswa','s-hadirHariIni','s-totalUsers','s-activeToken'].forEach(id => {
       document.getElementById(id).textContent = '0';
+    });
+    ['sd-totalSiswa','sd-hadirHariIni','sd-totalUsers','sd-activeToken'].forEach(id => {
+      document.getElementById(id).textContent = 'Gagal memuat';
     });
   }
 }
@@ -799,9 +960,16 @@ async function loadAbsensi() {
     makeTable('absensiFullTableWrap');
   } catch (err) {
     console.error('Error loading absensi:', err);
-    const wrap = document.getElementById('absensiTableWrap');
-    if (wrap) wrap.innerHTML = '<div class="empty-state">Gagal memuat data absensi</div>';
+    ['absensiTableWrap','absensiFullTableWrap'].forEach(id => {
+      const wrap = document.getElementById(id);
+      if (wrap) wrap.innerHTML = '<div class="empty-state">Gagal memuat data absensi</div>';
+    });
   }
+}
+
+// FIX 4: Hapus definisi duplikat downloadAbsensi — hanya satu fungsi yang dipakai
+function downloadAbsensi() {
+  window.location.href = 'dashboard_admin.php?action=download_absensi';
 }
 
 // ---- Chart ----
@@ -898,7 +1066,7 @@ document.getElementById('scheduleForm').addEventListener('submit', async functio
   const res  = await fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
   const data = await res.json();
   showToast(data.message, data.success ? 'success' : 'error');
-  if (data.success) { this.reset(); document.getElementById('jadwalDesk').value = ''; loadSchedules(); }
+  if (data.success) { this.reset(); loadSchedules(); }
 });
 
 async function deleteSchedule(id) {
@@ -914,7 +1082,8 @@ async function deleteSchedule(id) {
 
 // ---- Generate QR ----
 async function generateQR() {
-  const res  = await fetch('dashboard_admin.php?action=generate_qr', { headers:{'X-Requested-With':'XMLHttpRequest'} });
+  const qrType = document.getElementById('qrType').value;
+  const res  = await fetch('dashboard_admin.php?action=generate_qr&type=' + encodeURIComponent(qrType), { headers:{'X-Requested-With':'XMLHttpRequest'} });
   const data = await res.json();
   if (!data.success) { showToast('Gagal generate QR', 'error'); return; }
 
@@ -924,6 +1093,7 @@ async function generateQR() {
     colorDark:'#1a1a2e', colorLight:'#ffffff',
     correctLevel: QRCode.CorrectLevel.H
   });
+  document.getElementById('qrTypeLabel').textContent = data.type === 'end' ? 'Tipe: Selesai Jam' : 'Tipe: Masuk';
   document.getElementById('qrTokenText').textContent = data.token.substring(0, 20) + '...';
   document.getElementById('qrResult').style.display  = 'block';
 
@@ -936,7 +1106,8 @@ async function generateQR() {
     if (seconds <= 0) {
       clearInterval(qrTimer);
       document.getElementById('qrCountdown').textContent = 'EXPIRED';
-      showToast('Token QR telah kedaluwarsa!', 'warning');
+      showToast('Token QR telah kedaluwarsa! Membuat ulang token...', 'warning');
+      setTimeout(generateQR, 2000);
     }
     seconds--;
   }
@@ -965,8 +1136,8 @@ document.getElementById('addAccountForm').addEventListener('submit', async funct
 document.getElementById('profileForm').addEventListener('submit', async function(e) {
   e.preventDefault();
   const fd = new FormData();
-  fd.append('action',       'save_profile');
-  fd.append('nama',         document.getElementById('profileNama').value.trim());
+  fd.append('action',        'save_profile');
+  fd.append('nama',          document.getElementById('profileNama').value.trim());
   fd.append('password_baru', document.getElementById('profilePass').value);
   const res  = await fetch('dashboard_admin.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
   const data = await res.json();

@@ -10,13 +10,11 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'student') {
 require 'koneksi.php';
 
 $profilePhone = '';
-$profilePhoto = '';
-$stmtProfile = $pdo->prepare("SELECT phone, profile_photo FROM users WHERE id = ? LIMIT 1");
+$stmtProfile = $pdo->prepare("SELECT phone FROM users WHERE id = ? LIMIT 1");
 $stmtProfile->execute([(int) $_SESSION['user_id']]);
 $profileData = $stmtProfile->fetch();
 if ($profileData) {
     $profilePhone = $profileData['phone'] ?? '';
-    $profilePhoto = $profileData['profile_photo'] ?? '';
 }
 
 // ---- AJAX HANDLERS ----
@@ -30,7 +28,6 @@ if (
     if ($action === 'get_dashboard_data') {
         $nis = $_SESSION['nis'];
 
-        // Data absensi mingguan
         $labels = [];
         $hadir = [];
         for ($i = 6; $i >= 0; $i--) {
@@ -41,7 +38,6 @@ if (
             $hadir[] = (int) $stmt->fetchColumn();
         }
 
-        // Statistik siswa
         $stmt = $pdo->prepare("SELECT COUNT(*) FROM absensi WHERE nis = ?");
         $stmt->execute([$nis]);
         $totalHadir = (int) $stmt->fetchColumn();
@@ -54,7 +50,6 @@ if (
         $stmt->execute([$nis]);
         $totalTugas = (int) $stmt->fetchColumn();
 
-        // Jadwal materi
         $jadwal = $pdo->prepare("
             SELECT mj.id, mj.judul, mj.deskripsi, mj.tanggal_materi, mj.deadline_tugas,
                 COALESCE(tp.status, 'pending') AS tugas_status
@@ -66,20 +61,19 @@ if (
         $jadwal->execute([$nis]);
 
         echo json_encode([
-            'success' => true,
-            'labels' => $labels,
-            'hadir' => $hadir,
-            'stats' => [
-                'total_hadir' => $totalHadir,
+            'success'  => true,
+            'labels'   => $labels,
+            'hadir'    => $hadir,
+            'stats'    => [
+                'total_hadir'    => $totalHadir,
                 'hadir_hari_ini' => $hadirHariIni,
-                'total_tugas' => $totalTugas
+                'total_tugas'    => $totalTugas
             ],
-            'jadwal' => $jadwal->fetchAll()
+            'jadwal'   => $jadwal->fetchAll()
         ]);
         exit;
     }
 
-    // Get student history
     if ($action === 'get_history') {
         $nis = $_SESSION['nis'];
         $stmt = $pdo->prepare("SELECT tanggal, waktu, status FROM absensi WHERE nis = ? ORDER BY tanggal DESC, waktu DESC LIMIT 20");
@@ -105,9 +99,9 @@ if (
     }
 
     if ($action === 'save_profile') {
-        $nama        = trim((string) ($_POST['nama'] ?? ''));
+        $nama         = trim((string) ($_POST['nama'] ?? ''));
         $passwordBaru = (string) ($_POST['password_baru'] ?? '');
-        $phone       = trim((string) ($_POST['phone'] ?? ''));
+        $phone        = trim((string) ($_POST['phone'] ?? ''));
         if ($nama === '') {
             echo json_encode(['success' => false, 'message' => 'Nama tidak boleh kosong.']);
             exit;
@@ -119,47 +113,14 @@ if (
 
         $fields = ['nama = ?', 'phone = ?'];
         $params = [$nama, $phone];
-
-        $photoPath = null;
-        if (!empty($_FILES['photo']['name']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
-            $allowed = ['jpg', 'jpeg', 'png', 'webp'];
-            $fileInfo = pathinfo($_FILES['photo']['name']);
-            $ext = strtolower($fileInfo['extension'] ?? '');
-            if (!in_array($ext, $allowed, true)) {
-                echo json_encode(['success' => false, 'message' => 'Format foto hanya JPG, PNG, atau WEBP.']);
-                exit;
-            }
-            $uploadDir = __DIR__ . '/uploads/profiles';
-            if (!is_dir($uploadDir)) {
-                mkdir($uploadDir, 0755, true);
-            }
-            $fileName = 'user_' . (int) $_SESSION['user_id'] . '_' . time() . '.' . $ext;
-            $targetPath = $uploadDir . '/' . $fileName;
-            if (!move_uploaded_file($_FILES['photo']['tmp_name'], $targetPath)) {
-                echo json_encode(['success' => false, 'message' => 'Gagal mengunggah foto profil.']);
-                exit;
-            }
-            $photoPath = 'uploads/profiles/' . $fileName;
-            $fields[] = 'profile_photo = ?';
-            $params[] = $photoPath;
-
-            $oldPhoto = $_SESSION['profile_photo'] ?? '';
-            if ($oldPhoto && strpos($oldPhoto, 'uploads/profiles/') === 0 && file_exists(__DIR__ . '/' . $oldPhoto)) {
-                @unlink(__DIR__ . '/' . $oldPhoto);
-            }
-        }
-
         $params[] = (int) $_SESSION['user_id'];
         $pdo->prepare('UPDATE users SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
-        $_SESSION['nama'] = $nama;
+        $_SESSION['nama']  = $nama;
         $_SESSION['phone'] = $phone;
-        if ($photoPath !== null) {
-            $_SESSION['profile_photo'] = $photoPath;
-        }
         if ($passwordBaru !== '') {
             $pdo->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([password_hash($passwordBaru, PASSWORD_BCRYPT), (int) $_SESSION['user_id']]);
         }
-        echo json_encode(['success' => true, 'message' => 'Profil berhasil diperbarui!', 'nama' => $nama, 'phone' => $phone, 'photo' => $photoPath]);
+        echo json_encode(['success' => true, 'message' => 'Profil berhasil diperbarui!', 'nama' => $nama, 'phone' => $phone]);
         exit;
     }
 
@@ -179,7 +140,6 @@ if (
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="assets/css/style.css"/>
-  <!-- html5-qrcode library -->
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
 </head>
@@ -202,19 +162,19 @@ if (
   </div>
 
   <nav class="sidebar-nav">
-    <a href="#" class="nav-item active" onclick="showTab('dashboard', this)">
+    <a href="#" class="nav-item active" onclick="showTab('dashboard', this, true); return false;">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
       Dashboard
     </a>
-    <a href="#" class="nav-item" onclick="showTab('scan', this)">
+    <a href="#" class="nav-item" onclick="showTab('scan', this, true); return false;">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/><rect x="3" y="16" width="5" height="5"/><path d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7M3 12h.01M12 3h.01M12 16v.01M16 12h1a2 2 0 0 1 2 2v1"/></svg>
       Scan QR
     </a>
-    <a href="#" class="nav-item" onclick="showTab('jadwal', this)">
+    <a href="#" class="nav-item" onclick="showTab('jadwal', this, true); return false;">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
       Jadwal Materi
     </a>
-    <a href="#" class="nav-item" onclick="showTab('profil', this)">
+    <a href="#" class="nav-item" onclick="showTab('profil', this, true); return false;">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
       Profil Saya
     </a>
@@ -222,11 +182,7 @@ if (
 
   <div class="sidebar-user">
     <div class="user-avatar">
-      <?php if (!empty($profilePhoto)): ?>
-        <img src="<?= htmlspecialchars($profilePhoto) ?>" alt="Foto Profil" />
-      <?php else: ?>
-        <?= strtoupper(substr($_SESSION['nama'], 0, 1)) ?>
-      <?php endif; ?>
+      <?= strtoupper(substr($_SESSION['nama'], 0, 1)) ?>
     </div>
     <div class="user-info">
       <span class="user-name"><?= htmlspecialchars($_SESSION['nama']) ?></span>
@@ -319,6 +275,7 @@ if (
           <div class="loading-placeholder">Memuat status...</div>
         </div>
         <div class="mt-20">
+          <!-- FIX: Panggil showTab tanpa parameter closeSidebar agar sidebar tidak terbuka -->
           <button onclick="showTab('scan')" class="btn-primary btn-full-width">
             📱 Buka Scanner QR
           </button>
@@ -342,7 +299,6 @@ if (
 
   <!-- TAB: SCAN -->
   <div id="tab-scan" class="tab-content">
-    <!-- STUDENT INFO CARD -->
     <div class="student-card fade-in">
       <div class="student-avatar"><?= strtoupper(substr($_SESSION['nama'], 0, 1)) ?></div>
       <div class="student-details">
@@ -355,7 +311,6 @@ if (
       </div>
     </div>
 
-    <!-- SCANNER SECTION -->
     <div class="scanner-card fade-in">
       <div class="scanner-label">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="5"/><rect x="16" y="3" width="5" height="5"/><rect x="3" y="16" width="5" height="5"/><path d="M21 16h-3a2 2 0 0 0-2 2v3M21 21v.01M12 7v3a2 2 0 0 1-2 2H7"/></svg>
@@ -395,7 +350,6 @@ if (
       </div>
     </div>
 
-    <!-- HISTORY -->
     <div class="card fade-in">
       <div class="card-header">
         <h3>Riwayat Absensi</h3>
@@ -417,25 +371,17 @@ if (
         <h3>Edit Profil Siswa</h3>
       </div>
       <p class="section-subtitle">Ubah nama, HP, dan foto profil agar tampilan lebih personal.</p>
-      <form id="profileFormStudent" class="form-grid" enctype="multipart/form-data">
+      <form id="profileFormStudent" class="form-grid" method="post" action="dashboard_student.php" enctype="multipart/form-data">
         <div class="profile-card">
           <div class="profile-photo-box">
-            <?php if (!empty($profilePhoto)): ?>
-              <img id="profilePreview" src="<?= htmlspecialchars($profilePhoto) ?>" alt="Profil" />
-            <?php else: ?>
-              <div id="profilePreview" class="profile-fallback"><?= strtoupper(substr($_SESSION['nama'], 0, 1)) ?></div>
-            <?php endif; ?>
+            <div class="profile-fallback"><?= strtoupper(substr($_SESSION['nama'], 0, 1)) ?></div>
           </div>
-          <div class="profile-photo-label">Foto profil</div>
         </div>
         <div class="input-wrap">
           <input type="text" id="studentNama" name="nama" value="<?= htmlspecialchars($_SESSION['nama']) ?>" placeholder="Nama lengkap" required/>
         </div>
         <div class="input-wrap">
           <input type="text" id="studentPhone" name="phone" value="<?= htmlspecialchars($profilePhone) ?>" placeholder="No HP (contoh: +6281234567890)"/>
-        </div>
-        <div class="input-wrap">
-          <input type="file" id="studentPhoto" name="photo" accept="image/png,image/jpeg,image/webp"/>
         </div>
         <div class="input-wrap">
           <input type="password" id="studentPassBaru" name="password_baru" placeholder="Password baru (kosongkan jika tidak diubah)"/>
@@ -467,47 +413,77 @@ if (
   </a>
 </nav>
 
-<!-- OVERLAY for mobile -->
 <div class="sidebar-overlay" id="overlay" onclick="toggleSidebar()"></div>
-
 <div id="toast" class="toast"></div>
 
 <script>
 // ============================================================
 // Dashboard Student Script
 // ============================================================
-let weeklyChartStudent = null;
-let html5QrCode = null;
-let scanning = false;
-let lastScanned = '';
+let weeklyChartStudent     = null;
+let html5QrCode            = null;
+let scanning               = false;
+let lastScanned            = '';
 let weeklyChartStudentScan = null;
 
-// Init
+// ---- Init ----
 document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('currentDate').textContent = new Date().toLocaleDateString('id-ID', {weekday:'long',year:'numeric',month:'long',day:'numeric'});
-  // Set active tab for bottom nav
-  document.querySelector('.bottom-nav-item[data-tab="dashboard"]').classList.add('active');
+  document.getElementById('currentDate').textContent =
+    new Date().toLocaleDateString('id-ID', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+
+  // Bottom nav — FIX: tidak meneruskan closeSidebar=true
   document.querySelectorAll('.bottom-nav-item').forEach(el => {
     el.addEventListener('click', event => {
       event.preventDefault();
+      // Panggil showTab tanpa argumen ketiga agar sidebar TIDAK di-toggle
       showTab(el.dataset.tab, el);
     });
   });
+
   loadDashboardData();
 });
 
-// Tab switching
-function showTab(tab, el) {
-  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('.bottom-nav-item').forEach(el => el.classList.remove('active'));
-  document.getElementById('tab-' + tab).classList.add('active');
-  if (el) el.classList.add('active');
-  const titles = {dashboard:'Dashboard Siswa', jadwal:'Jadwal Materi', scan:'Scan QR', profil:'Profil Saya'};
-  document.getElementById('pageTitle').textContent = titles[tab] || 'Dashboard Siswa';
-  if (window.innerWidth < 768) toggleSidebar();
+// ---- Tab switching ----
+// closeSidebar = true  → dipanggil dari link sidebar (harus tutup sidebar di mobile)
+// closeSidebar = false/undefined → dipanggil dari bottom nav atau tombol lain (tidak sentuh sidebar)
+function showTab(tab, el, closeSidebar) {
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.querySelectorAll('.bottom-nav-item').forEach(n => n.classList.remove('active'));
 
-  // Load tab-specific data
+  document.getElementById('tab-' + tab).classList.add('active');
+
+  // Tandai item aktif di sidebar maupun bottom nav
+  if (el) {
+    el.classList.add('active');
+  }
+  // Sync active state bottom nav berdasarkan tab name
+  const bottomItem = document.querySelector(`.bottom-nav-item[data-tab="${tab}"]`);
+  if (bottomItem) bottomItem.classList.add('active');
+  // Sync active state sidebar nav berdasarkan tab name
+  document.querySelectorAll('.nav-item').forEach(n => {
+    if (n.getAttribute('onclick') && n.getAttribute('onclick').includes(`'${tab}'`)) {
+      n.classList.add('active');
+    }
+  });
+
+  const titles = {
+    dashboard : 'Dashboard Siswa',
+    jadwal    : 'Jadwal Materi',
+    scan      : 'Scan QR',
+    profil    : 'Profil Saya'
+  };
+  document.getElementById('pageTitle').textContent = titles[tab] || 'Dashboard Siswa';
+
+  // Hanya tutup sidebar jika dipanggil dari link sidebar (bukan bottom nav)
+  if (closeSidebar && window.innerWidth < 768) {
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar.classList.contains('open')) {
+      toggleSidebar();
+    }
+  }
+
+  // Load data spesifik tab
   if (tab === 'scan') {
     loadHistory();
     loadMiniCalendar();
@@ -517,24 +493,17 @@ function showTab(tab, el) {
   }
 }
 
-// Load dashboard data
+// ---- Load dashboard data ----
 async function loadDashboardData() {
   try {
-    const res = await fetch('dashboard_student.php?action=get_dashboard_data', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const res  = await fetch('dashboard_student.php?action=get_dashboard_data', { headers:{'X-Requested-With':'XMLHttpRequest'} });
     const data = await res.json();
     if (data.success) {
-      // Update stats
-      document.getElementById('s-totalHadir').textContent = data.stats.total_hadir;
-      document.getElementById('s-hadirHariIni').textContent = data.stats.hadir_hari_ini;
-      document.getElementById('s-totalTugas').textContent = data.stats.total_tugas;
-
-      // Load chart
+      document.getElementById('s-totalHadir').textContent    = data.stats.total_hadir;
+      document.getElementById('s-hadirHariIni').textContent  = data.stats.hadir_hari_ini;
+      document.getElementById('s-totalTugas').textContent    = data.stats.total_tugas;
       loadWeeklyChart(data.labels, data.hadir);
-
-      // Load jadwal
       renderJadwal(data.jadwal);
-
-      // Status hari ini
       renderStatusToday(data.stats.hadir_hari_ini > 0);
     }
   } catch (err) {
@@ -543,70 +512,49 @@ async function loadDashboardData() {
   }
 }
 
-// Load weekly chart
+// ---- Weekly chart (dashboard tab) ----
 function loadWeeklyChart(labels, hadirData) {
   const ctx = document.getElementById('weeklyChartStudent');
   if (!ctx) return;
   if (weeklyChartStudent) weeklyChartStudent.destroy();
-
   weeklyChartStudent = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: labels,
+      labels,
       datasets: [{
         label: 'Kehadiran',
         data: hadirData,
-        backgroundColor: 'rgba(99, 102, 241, 0.7)',
+        backgroundColor: 'rgba(99,102,241,0.7)',
         borderColor: '#6366F1',
         borderWidth: 1,
         borderRadius: 4,
-        borderSkipped: false,
+        borderSkipped: false
       }]
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      aspectRatio: 1,
-      animation: false,
+      responsive: true, maintainAspectRatio: false, animation: false,
       plugins: {
         legend: { display: false },
-        tooltip: {
-          backgroundColor: 'rgba(0,0,0,0.8)',
-          titleColor: '#fff',
-          bodyColor: '#fff',
-          cornerRadius: 6,
-          displayColors: false
-        }
+        tooltip: { backgroundColor:'rgba(0,0,0,0.8)', titleColor:'#fff', bodyColor:'#fff', cornerRadius:6, displayColors:false }
       },
       scales: {
-        x: {
-          grid: { display: false },
-          ticks: { font: { size: 12 } }
-        },
-        y: {
-          beginAtZero: true,
-          ticks: { precision: 0, font: { size: 12 } },
-          grid: { color: 'rgba(148,163,184,0.2)' }
-        }
+        x: { grid:{ display:false }, ticks:{ font:{ size:12 } } },
+        y: { beginAtZero:true, ticks:{ precision:0, font:{ size:12 } }, grid:{ color:'rgba(148,163,184,0.2)' } }
       },
-      interaction: {
-        intersect: false,
-        mode: 'index'
-      }
+      interaction: { intersect:false, mode:'index' }
     }
   });
 }
 
-// Load weekly chart for scan tab
+// ---- Weekly chart (scan tab) ----
 async function loadWeeklyChartScan() {
   try {
-    const res = await fetch('dashboard_student.php?action=get_dashboard_data', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const res  = await fetch('dashboard_student.php?action=get_dashboard_data', { headers:{'X-Requested-With':'XMLHttpRequest'} });
     const data = await res.json();
     if (!data.success) return;
     const ctx = document.getElementById('weeklyChartStudentScan');
     if (!ctx) return;
     if (weeklyChartStudentScan) weeklyChartStudentScan.destroy();
-
     weeklyChartStudentScan = new Chart(ctx, {
       type: 'bar',
       data: {
@@ -614,58 +562,38 @@ async function loadWeeklyChartScan() {
         datasets: [{
           label: 'Kehadiran',
           data: data.hadir,
-          backgroundColor: 'rgba(99, 102, 241, 0.7)',
+          backgroundColor: 'rgba(99,102,241,0.7)',
           borderColor: '#6366F1',
           borderWidth: 1,
           borderRadius: 4,
-          borderSkipped: false,
+          borderSkipped: false
         }]
       },
       options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        aspectRatio: 1,
-        animation: false,
+        responsive: true, maintainAspectRatio: false, animation: false,
         plugins: {
           legend: { display: false },
-          tooltip: {
-            backgroundColor: 'rgba(0,0,0,0.8)',
-            titleColor: '#fff',
-            bodyColor: '#fff',
-            cornerRadius: 6,
-            displayColors: false
-          }
+          tooltip: { backgroundColor:'rgba(0,0,0,0.8)', titleColor:'#fff', bodyColor:'#fff', cornerRadius:6, displayColors:false }
         },
         scales: {
-          x: {
-            grid: { display: false },
-            ticks: { font: { size: 12 } }
-          },
-          y: {
-            beginAtZero: true,
-            ticks: { precision: 0, font: { size: 12 } },
-            grid: { color: 'rgba(148,163,184,0.2)' }
-          }
+          x: { grid:{ display:false }, ticks:{ font:{ size:12 } } },
+          y: { beginAtZero:true, ticks:{ precision:0, font:{ size:12 } }, grid:{ color:'rgba(148,163,184,0.2)' } }
         },
-        interaction: {
-          intersect: false,
-          mode: 'index'
-        }
+        interaction: { intersect:false, mode:'index' }
       }
     });
   } catch (err) {
-    console.error('Error loading chart:', err);
+    console.error('Error loading scan chart:', err);
   }
 }
 
-// Render jadwal
+// ---- Render jadwal ----
 function renderJadwal(jadwal) {
   const wrap = document.getElementById('jadwalWrap');
   if (!jadwal || !jadwal.length) {
     wrap.innerHTML = '<div class="empty-state">Belum ada jadwal materi</div>';
     return;
   }
-
   wrap.innerHTML = jadwal.map(j => `
     <div class="jadwal-item ${j.tugas_status === 'done' ? 'completed' : ''}">
       <div class="jadwal-header">
@@ -684,67 +612,51 @@ function renderJadwal(jadwal) {
   `).join('');
 }
 
-// Render status hari ini
+// ---- Render status hari ini ----
 function renderStatusToday(hasAttended) {
   const wrap = document.getElementById('statusToday');
   wrap.innerHTML = hasAttended ? `
     <div class="status-attended">
       <div class="status-icon">✅</div>
-      <div>
-        <h4>Kamu sudah absen hari ini!</h4>
-        <p>Selamat, kehadiran tercatat dengan baik.</p>
-      </div>
+      <div><h4>Kamu sudah absen hari ini!</h4><p>Selamat, kehadiran tercatat dengan baik.</p></div>
     </div>
   ` : `
     <div class="status-missing">
       <div class="status-icon">⏰</div>
-      <div>
-        <h4>Belum absen hari ini</h4>
-        <p>Jangan lupa untuk scan QR code absensi.</p>
-      </div>
+      <div><h4>Belum absen hari ini</h4><p>Jangan lupa untuk scan QR code absensi.</p></div>
     </div>
   `;
 }
 
-// Mark task as done
+// ---- Mark task done ----
 async function markTaskDone(jadwalId) {
   const fd = new FormData();
   fd.append('action', 'mark_task_done');
   fd.append('jadwal_id', jadwalId);
-
   try {
-    const res = await fetch('dashboard_student.php', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
+    const res  = await fetch('dashboard_student.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
     const data = await res.json();
     showToast(data.message, data.success ? 'success' : 'error');
-    if (data.success) {
-      loadDashboardData(); // Reload data
-    }
+    if (data.success) loadDashboardData();
   } catch (err) {
     showToast('Gagal menyimpan perubahan', 'error');
   }
 }
 
-// Profile form
+// ---- Profile form ----
 const profileForm = document.getElementById('profileFormStudent');
 if (profileForm) {
   profileForm.addEventListener('submit', async function(e) {
     e.preventDefault();
     const fd = new FormData(this);
     fd.append('action', 'save_profile');
-
     try {
-      const res = await fetch('dashboard_student.php', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
+      const res  = await fetch('dashboard_student.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
       const data = await res.json();
       showToast(data.message, data.success ? 'success' : 'error');
       if (data.success) {
         document.querySelectorAll('.user-name').forEach(el => el.textContent = data.nama);
         document.getElementById('studentPassBaru').value = '';
-        if (data.photo) {
-          const avatar = document.querySelector('.sidebar-user .user-avatar');
-          if (avatar) {
-            avatar.innerHTML = `<img src="${escapeHTML(data.photo)}" alt="Foto Profil" />`;
-          }
-        }
       }
     } catch (err) {
       showToast('Gagal menyimpan profil', 'error');
@@ -752,37 +664,13 @@ if (profileForm) {
   });
 }
 
-const photoInput = document.getElementById('studentPhoto');
-if (photoInput) {
-  photoInput.addEventListener('change', function() {
-    const preview = document.getElementById('profilePreview');
-    if (!preview || !this.files || !this.files[0]) return;
-    const file = this.files[0];
-    if (!file.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (preview.tagName === 'IMG') {
-        preview.src = reader.result;
-      } else {
-        const container = document.createElement('img');
-        container.id = 'profilePreview';
-        container.src = reader.result;
-        container.alt = 'Preview Profil';
-        container.className = 'profile-photo-img';
-        preview.replaceWith(container);
-      }
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-// Logout
+// ---- Logout ----
 async function doLogout() {
   if (!confirm('Yakin ingin logout?')) return;
   const fd = new FormData();
   fd.append('action', 'logout');
   try {
-    const res = await fetch('dashboard_student.php', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
+    const res  = await fetch('dashboard_student.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
     const data = await res.json();
     if (data.success) window.location.href = data.redirect;
   } catch (err) {
@@ -790,32 +678,29 @@ async function doLogout() {
   }
 }
 
-// Start QR scanner
+// ---- QR Scanner ----
 async function startScanner() {
   if (scanning) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
     showToast('Browser Anda tidak mendukung akses kamera. Gunakan Chrome atau browser terbaru.', 'error');
     return;
   }
-
   try {
     const cameras = await Html5Qrcode.getCameras();
     if (!cameras || !cameras.length) {
       showToast('Tidak ada kamera yang tersedia. Pastikan perangkat memiliki kamera aktif.', 'error');
       return;
     }
-
     const selectedCamera = cameras.find(cam => /back|rear|belakang/i.test(cam.label)) || cameras[0];
     html5QrCode = new Html5Qrcode('qr-reader');
-    const config = { fps: 10, qrbox: { width: 220, height: 220 }, aspectRatio: 1.0 };
-
+    const config = { fps:10, qrbox:{ width:220, height:220 }, aspectRatio:1.0 };
     await html5QrCode.start(selectedCamera.id, config, onScanSuccess, onScanError);
     scanning = true;
     document.getElementById('startBtn').style.display = 'none';
-    document.getElementById('stopBtn').style.display = 'flex';
+    document.getElementById('stopBtn').style.display  = 'flex';
     showToast('Kamera aktif. Arahkan ke QR Code.', 'success');
   } catch (err) {
-    const message = err?.message || String(err);
+    const message      = err?.message || String(err);
     const errorMessage = /permission|denied|not allowed/i.test(message)
       ? 'Izin kamera ditolak. Coba atur izin kamera di browser.'
       : /notfound|NotFound|No cameras/i.test(message)
@@ -826,36 +711,28 @@ async function startScanner() {
   }
 }
 
-// Stop scanner
 async function stopScanner() {
   if (!scanning || !html5QrCode) return;
   await html5QrCode.stop();
   scanning = false;
   document.getElementById('startBtn').style.display = 'flex';
-  document.getElementById('stopBtn').style.display = 'none';
+  document.getElementById('stopBtn').style.display  = 'none';
 }
 
-// On scan success
 async function onScanSuccess(token) {
-  if (token === lastScanned) return; // Debounce
+  if (token === lastScanned) return;
   lastScanned = token;
-
   await stopScanner();
   showScanResult('loading', 'Memproses absensi...');
-
   const fd = new FormData();
   fd.append('token', token);
-  const res = await fetch('proses_absen.php', {
-    method: 'POST',
-    headers: { 'X-Requested-With': 'XMLHttpRequest' },
-    body: fd
-  });
+  const res  = await fetch('proses_absen.php', { method:'POST', headers:{'X-Requested-With':'XMLHttpRequest'}, body:fd });
   const data = await res.json();
-
   if (data.success) {
     showScanResult('success', data.message);
     showToast(data.message, 'success');
-    document.getElementById('statusIndicator').innerHTML = `<span class="status-dot active"></span><span>Sudah Absen ✓</span>`;
+    document.getElementById('statusIndicator').innerHTML =
+      `<span class="status-dot active"></span><span>Sudah Absen ✓</span>`;
     document.getElementById('startBtn').innerHTML = `
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/></svg>
       Scan Lagi
@@ -868,21 +745,19 @@ async function onScanSuccess(token) {
   }
 }
 
-function onScanError(err) {
-  // Silently ignore scan errors (camera searching)
-}
+function onScanError(err) { /* Abaikan error pencarian kamera */ }
 
 function showScanResult(type, msg) {
   const resultDiv = document.getElementById('scanResult');
   resultDiv.style.display = 'block';
-  resultDiv.className = 'scan-result-box ' + type;
-  resultDiv.innerHTML = msg;
+  resultDiv.className     = 'scan-result-box ' + type;
+  resultDiv.innerHTML     = msg;
 }
 
-// Load history
+// ---- History ----
 async function loadHistory() {
   try {
-    const res = await fetch('dashboard_student.php?action=get_history', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const res  = await fetch('dashboard_student.php?action=get_history', { headers:{'X-Requested-With':'XMLHttpRequest'} });
     const data = await res.json();
     if (!data.success) return;
     renderHistory(data.data);
@@ -891,14 +766,12 @@ async function loadHistory() {
   }
 }
 
-// Render history
 function renderHistory(history) {
   const wrap = document.getElementById('historyWrap');
   if (!history || !history.length) {
     wrap.innerHTML = '<div class="empty-state">Belum ada riwayat absensi</div>';
     return;
   }
-
   wrap.innerHTML = history.map(h => `
     <div class="history-item">
       <div class="history-date">${escapeHTML(h.tanggal)}</div>
@@ -908,40 +781,37 @@ function renderHistory(history) {
   `).join('');
 }
 
-// Load mini calendar
+// ---- Mini Calendar ----
 function loadMiniCalendar() {
   const calendarDiv = document.getElementById('miniCalendar');
-  const now = new Date();
-  const month = now.getMonth();
-  const year = now.getFullYear();
-  const firstDay = new Date(year, month, 1).getDay();
+  const now       = new Date();
+  const month     = now.getMonth();
+  const year      = now.getFullYear();
+  const firstDay  = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
 
   let html = `<div class="mini-calendar">
-    <div class="calendar-header">${now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}</div>
+    <div class="calendar-header">${now.toLocaleDateString('id-ID', { month:'long', year:'numeric' })}</div>
     <div class="calendar-grid">
-      <div class="day-label">M</div><div class="day-label">S</div><div class="day-label">S</div><div class="day-label">R</div><div class="day-label">K</div><div class="day-label">J</div><div class="day-label">S</div>`;
+      <div class="day-label">M</div><div class="day-label">S</div><div class="day-label">S</div>
+      <div class="day-label">R</div><div class="day-label">K</div><div class="day-label">J</div>
+      <div class="day-label">S</div>`;
 
-  for (let i = 0; i < firstDay; i++) {
-    html += '<div class="day empty"></div>';
+  for (let i = 0; i < firstDay; i++) html += '<div class="day empty"></div>';
+  for (let d = 1; d <= daysInMonth; d++) {
+    html += `<div class="day ${d === now.getDate() ? 'today' : ''}">${d}</div>`;
   }
-
-  for (let day = 1; day <= daysInMonth; day++) {
-    const isToday = day === now.getDate();
-    html += `<div class="day ${isToday ? 'today' : ''}">${day}</div>`;
-  }
-
   html += '</div></div>';
   calendarDiv.innerHTML = html;
 }
 
-// Sidebar toggle
+// ---- Sidebar toggle ----
 function toggleSidebar() {
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('overlay').classList.toggle('show');
 }
 
-// Utility
+// ---- Utility ----
 function escapeHTML(str) {
   const div = document.createElement('div');
   div.textContent = str;

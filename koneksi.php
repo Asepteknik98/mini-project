@@ -31,6 +31,11 @@ try {
                 $pdo->exec("ALTER TABLE users ADD COLUMN $column $definition");
             }
         }
+
+        $stmt = $pdo->query("SHOW COLUMNS FROM qr_sessions LIKE 'type'");
+        if ($stmt && $stmt->rowCount() === 0) {
+            $pdo->exec("ALTER TABLE qr_sessions ADD COLUMN type ENUM('start','end') NOT NULL DEFAULT 'start' AFTER token");
+        }
     }
 } catch (PDOException $e) {
     http_response_code(500);
