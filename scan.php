@@ -40,7 +40,7 @@ async function stopScanner() {
   stopBtn.style.display = 'none';
 }
 
-// 🔥 SCAN + GPS
+// 🔥 SCAN + GPS (REVISI)
 async function onScanSuccess(token) {
   if (token === lastScanned) return;
   lastScanned = token;
@@ -51,9 +51,10 @@ async function onScanSuccess(token) {
   try {
     const loc = await getLocation();
 
-    if (loc.acc > 50) {
-      showScanResult('error', 'GPS tidak akurat');
-      showToast('GPS tidak akurat', 'warning');
+    // 🔥 lebih longgar biar ga gagal mulu
+    if (loc.acc > 100) {
+      showScanResult('error', 'GPS kurang akurat');
+      showToast('Coba pindah ke luar ruangan', 'warning');
       lastScanned = '';
       return;
     }
@@ -78,7 +79,9 @@ async function onScanSuccess(token) {
       showScanResult('success', data.message);
       showToast(data.message, 'success');
 
-      statusIndicator.innerHTML = `<span class="status-dot active"></span><span>Sudah Absen ✓</span>`;
+      statusIndicator.innerHTML =
+        `<span class="status-dot active"></span><span>Sudah Absen ✓</span>`;
+
       loadHistory();
 
     } else {
@@ -88,8 +91,8 @@ async function onScanSuccess(token) {
     }
 
   } catch (err) {
-    showScanResult('error', 'Gagal ambil GPS');
-    showToast('Aktifkan GPS', 'error');
+    showScanResult('error', err);
+    showToast(err, 'error');
     lastScanned = '';
   }
 }
@@ -106,7 +109,9 @@ function showScanResult(type, msg) {
 
 // HISTORY
 async function loadHistory() {
-  const res = await fetch('scan.php?action=get_history', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+  const res = await fetch('scan.php?action=get_history', {
+    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+  });
   const data = await res.json();
 
   const wrap = document.getElementById('historyWrap');
